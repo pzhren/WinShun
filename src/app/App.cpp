@@ -11,6 +11,7 @@
 #include "FavoritesSettings.h"
 #include "FileIconProvider.h"
 #include "FilePreview.h"
+#include "OfficeConvert.h"
 #include "ThumbnailProvider.h"
 #include "FolderMenu.h"
 #include "History.h"
@@ -22,6 +23,7 @@
 #include "McpTools.h"
 #include "Pipe.h"
 #include "Placement.h"
+#include "SearchHistory.h"
 #include "PluginSettings.h"
 #include "SearchEngine.h"
 #include "Secrets.h"
@@ -32,7 +34,6 @@
 #include "TextField.h"
 #include "Tools.h"
 #include "Unc.h"
-#include "Updater.h"
 #include "WindowFrame.h"
 #include "WindowLogo.h"
 #include "platform/ClipboardWatcher.h"
@@ -138,8 +139,6 @@ enum TrayCommand {
     RebuildCommand,
     AutostartCommand,
     SettingsCommand,
-    UpdateCommand,
-    CheckUpdateCommand,
     RestartCommand,
     QuitCommand,
     ClipboardCommand,
@@ -392,6 +391,8 @@ bool App::start(const StartOptions& options)
     QDir().mkpath(dataDir);
     m_history = std::make_unique<History>(dataDir + u"\\history.txt"_s);
     m_history->load();
+    m_searchHistory = std::make_unique<SearchHistory>(dataDir + u"\\searches.txt"_s);
+    m_searchHistory->load();
     // The dialog bar's pinned folders of old become favorites, once.
     m_favorites = std::make_unique<Favorites>(dataDir + u"\\favorites.json"_s, dataDir + u"\\dialog-pins.txt"_s);
     m_favorites->load();
@@ -440,6 +441,7 @@ bool App::start(const StartOptions& options)
     m_launcher
         = std::make_unique<Launcher>(m_index.get(), m_apps.get(), m_places.get(), m_engine.get(), m_history.get());
     m_launcher->setFavorites(m_favorites.get());
+    m_launcher->setSearchHistory(m_searchHistory.get()); // the queries searched last (最近搜索)
     m_preview = std::make_unique<FilePreview>();
     m_preview->setWindowFactory([this] { return createPreviewWindow(); });
     m_launcher->setPreview(m_preview.get());
@@ -480,7 +482,8 @@ bool App::start(const StartOptions& options)
     m_boxPressGrace.setSingleShot(true);
     m_boxPressGrace.setInterval(400ms);
     connect(&m_boxPressGrace, &QTimer::timeout, this, [this] {
-        if (m_window && m_window->isVisible() && !m_window->isActive() && !m_launcher->pinned())
+        if (m_window && m_window->isVisible() && !launcherMinimized() && !m_window->isActive()
+            && !m_launcher->pinned())
             hideLauncher();
     });
     // The footer's switches (the order, the start list): remembered.
@@ -497,8 +500,21 @@ bool App::start(const StartOptions& options)
         remember(&Settings::sort, kSorts[m_launcher->sort()].toString());
     });
     connect(m_launcher.get(), &Launcher::startListChanged, this, [this, remember] {
-        static constexpr QStringView kLists[] {u"opened", u"modified", u"none"};
+        static constexpr QStringView kLists[] {u"opened", u"modified", u"searched", u"none"};
         remember(&Settings::startList, kLists[m_launcher->startList()].toString());
+    });
+    // The window and pane sizes the user dragged to: remembered between runs.
+    connect(m_launcher.get(), &Launcher::previewPaneHeightChanged, this, [this] {
+        if (!qFuzzyCompare(m_settings.previewPaneHeight, m_launcher->previewPaneHeight())) {
+            m_settings.previewPaneHeight = m_launcher->previewPaneHeight();
+            m_settings.save();
+        }
+    });
+    connect(m_launcher.get(), &Launcher::previewPaneWidthChanged, this, [this] {
+        if (!qFuzzyCompare(m_settings.previewPaneWidth, m_launcher->previewPaneWidth())) {
+            m_settings.previewPaneWidth = m_launcher->previewPaneWidth();
+            m_settings.save();
+        }
     });
     createPluginHost();
 
@@ -543,21 +559,8 @@ bool App::start(const StartOptions& options)
             m_settingsEditor->setSettings(m_settings);
     });
 
-    m_updater = std::make_unique<Updater>();
     m_backup = std::make_unique<Backup>();
     connect(m_backup.get(), &Backup::restartRequested, this, [this] { restart({u"--settings"_s}); });
-    m_updater->setChinese(m_language == u"zh");
-    connect(m_updater.get(), &Updater::found, this, [this](bool manual) {
-        // Asked for, or the settings window is open: show it there. Otherwise
-        // a tray notification, which does not take the keyboard from anyone.
-        if (manual || (m_settingsWindow && m_settingsWindow->isVisible())) {
-            showUpdate();
-            return;
-        }
-        m_messages->showNotification(tr("Win顺 %1 可以更新了").arg(m_updater->availableVersion()),
-            tr("点这里查看更新内容"));
-        m_updateNotified = true;
-    });
 
     if (!createWindow())
         return false;
@@ -566,9 +569,7 @@ bool App::start(const StartOptions& options)
     callbacks.trayActivated = [this] { toggleLauncher(); };
     callbacks.trayMenuRequested = [this] { showTrayMenu(); };
     callbacks.notificationClicked = [this] {
-        if (std::exchange(m_updateNotified, false))
-            showUpdate();
-        else if (std::exchange(m_clipboardNotified, false))
+        if (std::exchange(m_clipboardNotified, false))
             showClipboardSettings();
     };
     callbacks.hotkeyPressed = [this](int id) {
@@ -691,7 +692,6 @@ bool App::start(const StartOptions& options)
         m_messages->showNotification(tr("Win顺 现在有剪贴板历史了"),
             m_settings.clipboard ? tr("复制过的文字、图片和文件都能找回来。点这里设置用 Win+V 打开它。")
                                  : tr("复制过的文字、图片和文件都能找回来。点这里打开它。"));
-        m_updateNotified = false;
         m_clipboardNotified = true;
     } else if (!m_indexFolderProblem.isEmpty()) {
         m_messages->showNotification(tr("索引位置"), m_indexFolderProblem);
@@ -741,7 +741,48 @@ bool App::createWindow()
     prepareBackdrop(m_window);
     m_window->create(); // native handle now, so DWM styling applies before the first show
     m_window->installEventFilter(this);
-    shellcontext::watchKeys(reinterpret_cast<HWND>(m_window->winId())); // which key asks for a context menu (eventFilter)
+    // The frameless window carries no WS_MINIMIZEBOX, and Explorer reads that
+    // as "cannot be minimized": a press on its own taskbar button while it is
+    // up then does nothing at all — no SC_MINIMIZE, no activation, the press
+    // is simply swallowed. Ask for the bit (and its maximize twin) so the
+    // button toggles the window as it does for any other. The frameless look
+    // is untouched: the bits only license the taskbar press. Qt re-derives
+    // the style from its flags when flags change, so the visibility handler
+    // below re-asserts them.
+    const HWND launcherHwnd = reinterpret_cast<HWND>(m_window->winId());
+    const auto keepMinimizeBox = [launcherHwnd] {
+        const LONG_PTR style = ::GetWindowLongPtrW(launcherHwnd, GWL_STYLE);
+        ::SetWindowLongPtrW(launcherHwnd, GWL_STYLE, style | WS_MINIMIZEBOX | WS_MAXIMIZEBOX);
+    };
+    keepMinimizeBox();
+    // Its button on the taskbar (a window of its own, Main.qml's flags): put
+    // away, it is minimized there, never hidden, so that the button stays to
+    // be pressed. A press brings it back (reopenLauncher); its button pressed
+    // while it is up puts it away, as Esc would.
+    connect(m_window, &QWindow::visibilityChanged, this, [this, keepMinimizeBox](QWindow::Visibility visibility) {
+        keepMinimizeBox();
+        if (!m_window || m_launcherClosing) // on its way out: finishHidingLauncher decides
+            return;
+        if (visibility == QWindow::Minimized) {
+            if (!m_launcherPutAway)
+                putAwayLauncher();
+        } else if (m_launcherPutAway) {
+            // Explorer restoring it right after the press that put it away
+            // (its own button pressed while it was up): that press is spent,
+            // it stays put away. minimizeLauncher, to put back the window
+            // Explorer has just brought out of the minimized state. Either
+            // mark is enough: the focus going to the taskbar, or the
+            // put-away itself — the deactivation may only be heard of after
+            // the restoration, or not at all (the clipboard, say).
+            if ((m_taskbarPress.isValid() && m_taskbarPress.elapsed() < 700)
+                || (m_putAwayAt.isValid() && m_putAwayAt.elapsed() < 300)) {
+                minimizeLauncher();
+            } else {
+                reopenLauncher();
+            }
+        }
+    });
+    shellcontext::watchKeys(launcherHwnd); // which key asks for a context menu (eventFilter)
     m_launcher->setWindow(m_window);
     m_preview->setLauncherWindow(m_window);
     m_placement->setWindow(m_window);
@@ -778,14 +819,25 @@ bool App::createWindow()
         // over it; another window in front (a click on it, on the desktop,
         // on the rest of the taskbar) dismisses it at once, however soon
         // after it opened.
-        if (m_window && !m_window->isActive() && m_window->isVisible() && !clipboardUnderLauncher()) {
+        if (m_window && !m_window->isActive() && m_window->isVisible() && !launcherMinimized()
+            && !clipboardUnderLauncher()) {
+            const HWND front = ::GetForegroundWindow();
+            // A press anywhere on the taskbar takes the focus. If it was on
+            // the launcher's own button while the launcher was up, the press
+            // puts it away — and Explorer, deciding only afterwards whether
+            // the press activates or minimizes, may restore it right after
+            // (visibilityChanged). Mark when the focus went there, so that
+            // restoration of the very same press is not taken for a press
+            // that brings the launcher back.
+            if (taskbar::isTaskbar(front))
+                m_taskbarPress.start();
             // The preview (Alt+P) took the focus for a moment: a handler's
             // window of ours (handed back at once), or QuickLook's or Seer's
             // (which hand it back themselves). The launcher stays.
             if (m_preview->ownsForeground()) {
                 if (m_preview->foregroundIsOurs())
                     QMetaObject::invokeMethod(this, [this] {
-                        if (m_window && m_window->isVisible() && !m_window->isActive())
+                        if (m_window && m_window->isVisible() && !launcherMinimized() && !m_window->isActive())
                             win::bringToFront(m_window);
                     }, Qt::QueuedConnection);
                 return;
@@ -814,7 +866,6 @@ bool App::createWindow()
             }
             const bool justShown = m_launcherShown.isValid() && m_launcherShown.elapsed() < 500;
             const bool onBox = m_searchBox && m_searchBox->underPointer();
-            const HWND front = ::GetForegroundWindow();
             const bool elsewhere = front && front != reinterpret_cast<HWND>(m_window->winId())
                 && !(onBox && taskbar::isTaskbar(front)) && !win::isShellFlyout(front);
             if (m_searchBox && m_launcherOverBox && !elsewhere && (justShown || onBox))
@@ -921,6 +972,13 @@ QQuickWindow* App::createPreviewWindow()
 
 bool App::eventFilter(QObject* watched, QEvent* event)
 {
+    // Its button on the taskbar asks to close it (右键 › 关闭窗口, Alt+F4):
+    // that is putting it away, as Esc does. Win顺 stays (退出 is the tray's).
+    if (watched == m_window && event->type() == QEvent::Close) {
+        event->ignore();
+        hideLauncher();
+        return true;
+    }
     // The launcher's field, drawn in the box on the taskbar: the input
     // method's window goes by the caret there.
     if (watched == m_searchField && event->type() == QEvent::InputMethodQuery && m_launcher->inTaskbarBox()) {
@@ -1010,6 +1068,7 @@ void App::applyAppearance()
             m_clipPlacement->resized();
     }
     SystemTheme::setBackdropOn(m_settings.transparency == u"on"); // Mica stays set up behind, covered when off
+    SystemTheme::setBackground(m_settings.backgroundImage, m_settings.backgroundOpacity); // 自定义背景
     // Unknown follows Windows. Everything else reads the scheme from the style
     // hints and listens to colorSchemeChanged (see applyTheme, SystemTheme).
     QGuiApplication::styleHints()->setColorScheme(m_settings.theme == u"dark" ? Qt::ColorScheme::Dark
@@ -1031,8 +1090,6 @@ void App::applyAppearance()
     QLocale::setDefault(language == u"en" ? QLocale(QLocale::English, QLocale::UnitedStates)
                                           : QLocale(QLocale::Chinese, QLocale::China));
     QGuiApplication::setApplicationDisplayName(tr("Win顺"));
-    if (m_updater)
-        m_updater->setChinese(language == u"zh");
 
     if (m_pluginHost)
         m_pluginHost->setAppearance(language, isDarkMode() ? u"dark"_s : u"light"_s);
@@ -1119,7 +1176,6 @@ void App::applySettings(bool initial)
     if (!initial)
         applyAppearance();
     shellmenu::apply(m_settings.explorerMenu, tr("用 Win顺 搜索此处")); // after the language
-    m_updater->setAutomatic(m_settings.autoUpdate);
     m_backup->setFolder(m_settings.backupFolder);
     m_launcher->setRecordHistory(m_settings.recordHistory);
     m_launcher->setResultOptions(m_settings.foldersFirst ? KindOrder::FoldersFirst : KindOrder::FilesFirst,
@@ -1128,11 +1184,24 @@ void App::applySettings(bool initial)
     m_launcher->setSort(m_settings.sort == u"newest" ? Launcher::NewestFirst
             : m_settings.sort == u"oldest"           ? Launcher::OldestFirst
                                                      : Launcher::BestMatch);
-    m_launcher->setStartList(m_settings.startList == u"modified" ? Launcher::RecentlyModified
-            : m_settings.startList == u"none"                     ? Launcher::NoStartList
-                                                                 : Launcher::RecentlyOpened);
-    m_preview->setBuiltInOnly(m_settings.previewWith == u"builtin");
+    m_launcher->setStartList(m_settings.startList == u"modified"     ? Launcher::RecentlyModified
+            : m_settings.startList == u"searched"                    ? Launcher::RecentSearches
+            : m_settings.startList == u"none"                        ? Launcher::NoStartList
+                                                                     : Launcher::RecentlyOpened);
+    m_launcher->setSearchClearSeconds(m_settings.searchClearSeconds);
+    m_preview->setEmbedded(m_settings.previewEmbedded);
+    m_preview->setBuiltInOnly(m_settings.previewWith == u"builtin" || m_settings.previewEmbedded);
     m_preview->setTextExtensions(m_settings.contentExtensions);
+    // The program that turns an Office document into the PDF the pane draws:
+    // LibreOffice, the Office installed here, or whichever there is.
+    m_preview->setOfficeEngine(office::engineFromName(m_settings.previewOfficeEngine));
+    // 预览嵌入右侧 (previewEmbedded) decides where the pane is drawn — inside
+    // the launcher's window, or in a window of its own docked beside it — and
+    // whether it follows the rows without Alt+P.
+    m_launcher->setPreviewEmbedded(m_settings.previewEmbedded);
+    // The window and pane sizes the user dragged to, remembered between runs.
+    m_launcher->setPreviewPaneHeight(m_settings.previewPaneHeight);
+    m_launcher->setPreviewPaneWidth(m_settings.previewPaneWidth);
     m_clipboard->setNumberKeys(m_settings.clipboardNumberKeys);
     m_launcher->setNumberHints(m_settings.numberHints);
     m_clipboard->setNumberHints(m_settings.numberHints);
@@ -1144,6 +1213,8 @@ void App::applySettings(bool initial)
         m_settings.contentSizeLimits(), m_settings.contentInLowPriority, m_settings.contentDocuments);
     m_launcher->setWebShortcuts(m_settings.webShortcuts);
     m_launcher->setWebSuggestions(m_settings.webSuggestions);
+    m_launcher->setGlobalExcludedPaths(m_settings.excludedPaths); // before setFileTypes: both re-search once
+    m_launcher->setGlobalExcludedExtensions(m_settings.excludedExtensions); // before setFileTypes: both re-search once
     m_launcher->setFileTypes(m_settings.namedFileTypes()); // after applyAppearance: the built-in ones' names
     applyPlugins();
     if (!initial) {
@@ -1191,7 +1262,7 @@ void App::folderMenuHotkey()
     *wait = [this, wait](int left) {
         if (!m_folderMenu)
             return;
-        if (m_window && m_window->isVisible() && left > 0) {
+        if (launcherShown() && left > 0) {
             QTimer::singleShot(30ms, this, [wait, left] { (*wait)(left - 1); });
             return;
         }
@@ -1780,7 +1851,6 @@ void App::showSettings()
         QObject* object = component.createWithInitialProperties({
             {u"editor"_s, QVariant::fromValue(editor)},
             {u"frame"_s, QVariant::fromValue(frame)},
-            {u"updater"_s, QVariant::fromValue(m_updater.get())},
             {u"backup"_s, QVariant::fromValue(m_backup.get())},
         });
         auto* window = qobject_cast<QQuickWindow*>(object);
@@ -1961,13 +2031,6 @@ void App::showPluginSettings(const QString& pluginId)
     showSettings();
     if (m_settingsWindow)
         QMetaObject::invokeMethod(m_settingsWindow, "showPluginPage", Q_ARG(QVariant, QVariant(pluginId)));
-}
-
-void App::showUpdate()
-{
-    showSettings();
-    if (m_settingsWindow)
-        QMetaObject::invokeMethod(m_settingsWindow, "showUpdateDialog");
 }
 
 void App::refreshContentIndexStatus()
@@ -2260,6 +2323,7 @@ void App::dumpLauncher(const QString& file) const
 {
     QJsonObject state;
     state[u"visible"_s] = m_window && m_window->isVisible();
+    state[u"minimized"_s] = launcherMinimized(); // put away to the taskbar
     state[u"panel"_s] = m_launcher->panel();
     state[u"pinned"_s] = m_launcher->pinned();
     state[u"active"_s] = m_window && m_window->isActive();
@@ -2273,6 +2337,41 @@ void App::dumpLauncher(const QString& file) const
         state[u"dpr"_s] = m_window->devicePixelRatio();
         state[u"boxWidth"_s] = m_placement->boxWidth();
         state[u"customWidth"_s] = m_placement->customWidth();
+        // The height budget and the content column as laid out: for checking
+        // the window's height arithmetic against what is really on the screen.
+        state[u"userHeight"_s] = m_window->property("userHeight").toReal();
+        state[u"chromeHeight"_s] = m_window->property("chromeHeight").toReal();
+        state[u"listRows"_s] = m_window->property("listRows").toInt();
+        state[u"rowHeight"_s] = m_window->property("rowHeight").toInt();
+        state[u"headingHeight"_s] = m_window->property("headingHeight").toInt();
+        state[u"hintSpace"_s] = m_window->property("hintSpace").toInt();
+        state[u"fullHeight"_s] = m_window->property("fullHeight").toBool();
+        state[u"frameHeight"_s] = m_window->property("frameHeight").toReal();
+        state[u"rowsHeight"_s] = m_window->property("rowsHeight").toReal();
+        state[u"extraHeight"_s] = m_window->property("extraHeight").toReal();
+        state[u"paneRoom"_s] = m_window->property("paneRoom").toBool();
+        if (const auto* content = m_window->contentItem(); content) {
+            QJsonArray laidOut;
+            const auto describe = [](const QQuickItem* item) {
+                QJsonObject entry;
+                entry.insert(u"class"_s, QString::fromLatin1(item->metaObject()->className()));
+                entry.insert(u"y"_s, item->y());
+                entry.insert(u"height"_s, item->height());
+                entry.insert(u"implicit"_s, item->implicitHeight());
+                entry.insert(u"visible"_s, item->isVisible());
+                return entry;
+            };
+            for (const QQuickItem* child : content->childItems()) {
+                QJsonObject entry = describe(child);
+                QJsonArray inner;
+                for (const QQuickItem* in : child->childItems())
+                    inner.append(describe(in));
+                entry.insert(u"children"_s, inner);
+                laidOut.append(entry);
+            }
+            state[u"content"_s] = laidOut;
+            state[u"contentHeight"_s] = content->height();
+        }
         // The tip over a row whose name is cut (NameTip.qml): up, where, saying what.
         if (const auto* tip = m_window->findChild<QQuickWindow*>(u"nameTip"_s)) {
             const QRect t = tip->geometry();
@@ -2580,6 +2679,16 @@ void App::showLauncher(const QString& query, const std::optional<taskbar::Spot>&
     hideClipboard(false); // from under its search box: searching again
     m_boxPressGrace.stop();
     m_launcherShown.start();
+    // Back from its button on the taskbar: out of the minimized state first,
+    // so that placing it moves the window itself (not where it was put away),
+    // cloaked at once so that it is not seen at that spot as it looked then.
+    const bool putAway = std::exchange(m_launcherPutAway, false);
+    if (putAway) {
+        if (!m_launcher->pinned()) // pinned: it stays where it was put
+            win::setCloaked(m_window, true);
+        m_window->setWindowState(static_cast<Qt::WindowState>(
+            m_window->windowState() & ~Qt::WindowMinimized));
+    }
     if (m_launcher->pinned() && launcherShown()) {
         // Pinned and up already, without the focus (or under another topmost
         // window): to the front where it stands, the words as they are. Not
@@ -2598,7 +2707,7 @@ void App::showLauncher(const QString& query, const std::optional<taskbar::Spot>&
     // Opened anew (not back from on its way out, not up already): as at its
     // first opening, if so set. Still hidden or cloaked until the rows for
     // it are drawn, so the old words and rows are never seen.
-    if (m_settings.clearOnOpen && !wasClosing && (!m_window->isVisible() || m_prewarming.load()))
+    if (m_settings.clearOnOpen && !wasClosing && (!m_window->isVisible() || m_prewarming.load() || putAway))
         m_launcher->startOver();
     const bool wasInBox = m_launcher->inTaskbarBox();
     // Pinned, it stays while the user works elsewhere: a window of its own,
@@ -2630,7 +2739,7 @@ void App::showLauncher(const QString& query, const std::optional<taskbar::Spot>&
             if (m_launcherLogo && launcherShown())
                 m_launcherLogo->reveal();
         });
-    } else if (!m_window->isVisible() || prewarming) {
+    } else if (!m_window->isVisible() || prewarming || putAway) {
         // Shown cloaked: Windows would first put up the window as it looked
         // when it was hidden (old selection, old rows), then our repaint.
         // Revealed once a frame with the refreshed results is drawn.
@@ -3008,7 +3117,7 @@ void App::revealLauncher()
         return;
     // In from off its place first, then seen, the logo with it: not if this
     // was the launcher hiding before its first frame.
-    if (m_window->isVisible())
+    if (m_window->isVisible() && !launcherMinimized())
         m_placement->slideIn();
     win::setCloaked(m_window, false);
     if (m_launcherLogo && launcherShown())
@@ -3017,7 +3126,84 @@ void App::revealLauncher()
 
 bool App::launcherShown() const
 {
-    return m_window && m_window->isVisible() && !m_launcherClosing && !m_prewarming.load();
+    return m_window && m_window->isVisible() && !launcherMinimized() && !m_launcherClosing
+        && !m_prewarming.load();
+}
+
+// Put away to its button on the taskbar: `isVisible()` is true of a minimized
+// window (the taskbar needs that), but it is not up.
+bool App::launcherMinimized() const
+{
+    if (!m_window)
+        return false;
+    const auto hwnd = reinterpret_cast<HWND>(m_window->winId());
+    return hwnd && ::IsIconic(hwnd);
+}
+
+// What going away leaves behind, whether it slid out or its button on the
+// taskbar put it away: the box idle, the logo gone, the rows let go.
+void App::settleLauncherAway()
+{
+    m_launcherClosing = false;
+    m_launcherOverBox = false;
+    if (m_launcher->inTaskbarBox()) {
+        m_launcher->setInTaskbarBox(false);
+        if (m_searchBox) {
+            m_searchBox->setText({});
+            updateSearchBoxLook();
+        }
+    }
+    if (!m_window)
+        return;
+    m_launcherPutAway = true;
+    m_putAwayAt.start();
+    // Cloaked (up, not yet drawn with the rows for it): a cloaked window has
+    // no button on the taskbar to press.
+    if (std::exchange(m_revealing, false)) {
+        m_revealArmed.store(false);
+        m_revealSynced.store(false);
+        m_revealTimeout.stop();
+        win::setCloaked(m_window, false);
+    }
+    if (m_launcherLogo)
+        m_launcherLogo->conceal();
+    m_launcher->handleHidden();
+    if (m_launcher->panel())
+        setPanel(false); // the next opening is the box (put away: nothing to see of it)
+}
+
+void App::minimizeLauncher()
+{
+    if (!m_window)
+        return;
+    settleLauncherAway();
+    m_window->showMinimized();
+}
+
+// Its button on the taskbar put it away (or 显示桌面 did): as hideLauncher,
+// at once, the window minimized already.
+void App::putAwayLauncher()
+{
+    if (!m_window || m_launcherPutAway)
+        return;
+    if (m_launcher->systemMenuOpen())
+        ::EndMenu();
+    m_launcherHidden.start();
+    m_boxPressGrace.stop();
+    m_deliverTyping = false;
+    m_launcher->closePreview();
+    if (clipboardUnderLauncher())
+        hideClipboard(false);
+    settleLauncherAway();
+}
+
+// Its button pressed again: back up where it opens, as showLauncher opens it
+// (which takes the window out of the taskbar's minimized state first).
+void App::reopenLauncher()
+{
+    if (!m_window || !m_launcherPutAway || m_launcherClosing)
+        return;
+    showLauncher({}, std::nullopt, false, m_window->screen());
 }
 
 // The first frame a window draws sets up the graphics device, shaders and
@@ -3047,7 +3233,7 @@ void App::finishPrewarm()
 
 void App::hideLauncher()
 {
-    if (!m_window || !m_window->isVisible() || m_launcherClosing)
+    if (!m_window || !m_window->isVisible() || launcherMinimized() || m_launcherClosing)
         return;
     if (m_launcher->systemMenuOpen())
         ::EndMenu(); // the shell's menu over it (Shift+right-click) goes with it: double Ctrl, say
@@ -3077,27 +3263,17 @@ void App::hideLauncher()
 
 void App::finishHidingLauncher()
 {
-    m_launcherClosing = false;
-    m_launcherOverBox = false;
-    if (m_launcher->inTaskbarBox()) {
-        m_launcher->setInTaskbarBox(false);
-        if (m_searchBox) {
-            m_searchBox->setText({});
-            updateSearchBoxLook();
-        }
-    }
     if (!m_window || !m_window->isVisible())
         return;
-    m_window->hide();
-    revealLauncher(); // hidden before its first frame: drop the cloak
-    m_launcher->handleHidden();
-    if (m_launcher->panel())
-        setPanel(false); // the next opening is the box (hidden: nothing to see of it)
+    m_launcherClosing = false;
+    // Put away to its button on the taskbar, not hidden: the button stays
+    // there to bring it back (visibilityChanged, reopenLauncher).
+    minimizeLauncher();
 }
 
 void App::togglePanel()
 {
-    if (m_window && m_window->isVisible() && !m_launcherClosing)
+    if (launcherShown())
         setPanel(!m_launcher->panel());
 }
 
@@ -3123,7 +3299,7 @@ void App::setPanel(bool on)
     if (!m_window || on == m_launcher->panel())
         return;
     if (on) {
-        if (!m_window->isVisible() || m_launcherClosing || m_revealing || m_prewarming.load())
+        if (!launcherShown() || m_revealing)
             return;
         // Over Win顺's box on the taskbar: the field comes back into the
         // window, the box goes idle (the panel is a window of its own).
@@ -3143,7 +3319,8 @@ void App::setPanel(bool on)
     // it draws the next (pitfalls: the type strip): cloaked meanwhile, and
     // seen again once a frame of the box is on the screen.
     const std::optional<taskbar::Spot> spot = m_placement->taskbarSpot();
-    const bool seen = m_window->isVisible() && !m_launcherClosing && !m_revealing && !m_prewarming.load();
+    // Not on its way to the taskbar: cloaked then would take the button away.
+    const bool seen = launcherShown() && !m_launcherPutAway && !m_revealing;
     if (seen) {
         win::setCloaked(m_window, true);
         auto connection = std::make_shared<QMetaObject::Connection>();
@@ -3185,7 +3362,6 @@ void App::showTrayMenu()
         shell::MenuItem::separator(),
         {AutostartCommand, tr("开机自动启动"), autostart::isEnabled()},
         {SettingsCommand, tr("设置…")},
-        {CheckUpdateCommand, tr("检查更新…") + u'\t' + QCoreApplication::applicationVersion()},
         shell::MenuItem::separator(),
         {RestartCommand, tr("重新启动")},
         {QuitCommand, tr("退出")},
@@ -3206,9 +3382,6 @@ void App::showTrayMenu()
         const auto at = std::ranges::find_if(items, [](const shell::MenuItem& i) { return i.id == IndexInfo; });
         items.insert(at + 1, {AccessInfo, tr("索引服务未连接，正在遍历文件夹"), false, false});
     }
-    if (m_updater->available() && !m_updater->skipped()) // at the top, where it is seen
-        items.insert(items.begin(),
-            {{UpdateCommand, tr("Win顺 %1 可以更新了…").arg(m_updater->availableVersion())}, shell::MenuItem::separator()});
     POINT pos {};
     ::GetCursorPos(&pos);
     const DWORD built = ::GetTickCount();
@@ -3241,15 +3414,6 @@ void App::showTrayMenu()
         break;
     case SettingsCommand:
         showSettings();
-        break;
-    case UpdateCommand:
-        showUpdate();
-        break;
-    case CheckUpdateCommand:
-        // A version already known is shown at once; otherwise the dialog says "checking".
-        if (!m_updater->available())
-            m_updater->check(true);
-        showUpdate();
         break;
     case RestartCommand:
         restart({u"--background"_s});

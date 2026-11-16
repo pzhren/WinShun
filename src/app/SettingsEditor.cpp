@@ -4,6 +4,7 @@
 #include "FileIconProvider.h"
 #include "IndexFolder.h"
 #include "McpClients.h"
+#include "OfficeConvert.h"
 #include "PathText.h"
 #include "PluginSettings.h"
 #include "Query.h"
@@ -202,9 +203,19 @@ void SettingsEditor::setSort(const QString& sort)
 
 void SettingsEditor::setStartList(const QString& list)
 {
-    if (m_settings.startList == list || (list != u"opened" && list != u"modified" && list != u"none"))
+    if (m_settings.startList == list
+        || (list != u"opened" && list != u"modified" && list != u"searched" && list != u"none"))
         return;
     m_settings.startList = list;
+    commit();
+}
+
+void SettingsEditor::setSearchClearSeconds(int seconds)
+{
+    seconds = std::clamp(seconds, 0, 24 * 60 * 60);
+    if (m_settings.searchClearSeconds == seconds)
+        return;
+    m_settings.searchClearSeconds = seconds;
     commit();
 }
 
@@ -238,6 +249,59 @@ void SettingsEditor::setPreviewWith(const QString& with)
     if (m_settings.previewWith == with || (with != u"auto" && with != u"builtin"))
         return;
     m_settings.previewWith = with;
+    commit();
+}
+
+void SettingsEditor::setOfficeEngine(const QString& engine)
+{
+    if (m_settings.previewOfficeEngine == engine
+        || (engine != u"auto" && engine != u"libreoffice" && engine != u"office"))
+        return;
+    m_settings.previewOfficeEngine = engine;
+    commit();
+}
+
+bool SettingsEditor::libreOfficeInstalled() const
+{
+    return office::libreOfficeAvailable();
+}
+
+bool SettingsEditor::officeInstalled() const
+{
+    return office::officeAvailable();
+}
+
+void SettingsEditor::refreshPreviewEngines()
+{
+    emit previewEnginesChanged();
+}
+
+void SettingsEditor::installLibreOffice()
+{
+    if (!office::startLibreOfficeInstall())
+        return;
+    // An install of its own runs for a few minutes; the row says 安装中… until
+    // soffice.exe appears, then offers the engine as it is.
+    m_engineWatchedTicks = 0;
+    m_engineWatch.setInterval(3000);
+    m_engineWatch.setSingleShot(false);
+    disconnect(&m_engineWatch, nullptr, this, nullptr);
+    connect(&m_engineWatch, &QTimer::timeout, this, [this] {
+        ++m_engineWatchedTicks;
+        const bool there = office::libreOfficeAvailable();
+        emit previewEnginesChanged();
+        if (there || m_engineWatchedTicks > 200) // 10 minutes: a slow download, then stop
+            m_engineWatch.stop();
+    });
+    m_engineWatch.start();
+    emit previewEnginesChanged();
+}
+
+void SettingsEditor::setPreviewEmbedded(bool on)
+{
+    if (m_settings.previewEmbedded == on)
+        return;
+    m_settings.previewEmbedded = on;
     commit();
 }
 
@@ -587,6 +651,40 @@ void SettingsEditor::setTransparency(const QString& transparency)
     commit();
 }
 
+void SettingsEditor::setBackgroundImage(const QString& path)
+{
+    QString image = path.trimmed();
+    // A file that is not there is no background: clearing is how it goes away.
+    if (!image.isEmpty() && !QFileInfo::exists(image))
+        image.clear();
+    if (m_settings.backgroundImage == image)
+        return;
+    m_settings.backgroundImage = image;
+    // Picking the first picture with the opacity at zero would show nothing.
+    if (!image.isEmpty() && m_settings.backgroundOpacity == 0)
+        m_settings.backgroundOpacity = Settings::defaults().backgroundOpacity;
+    commit();
+}
+
+void SettingsEditor::setBackgroundOpacity(int percent)
+{
+    const int opacity = std::clamp(percent, 0, 100);
+    if (m_settings.backgroundOpacity == opacity)
+        return;
+    m_settings.backgroundOpacity = opacity;
+    commit();
+}
+
+void SettingsEditor::chooseBackgroundImage()
+{
+    const HWND owner = m_window ? reinterpret_cast<HWND>(m_window->winId()) : nullptr;
+    const QString path = shell::pickFile(owner, tr("选择背景图片"),
+        {{tr("图片（PNG、JPG、BMP、GIF、WebP）"), u"*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.webp"_s},
+            {tr("所有文件"), u"*.*"_s}});
+    if (!path.isEmpty())
+        setBackgroundImage(path);
+}
+
 void SettingsEditor::setTaskbarIcon(const QString& style)
 {
     if (m_settings.taskbarIcon == style)
@@ -917,14 +1015,6 @@ void SettingsEditor::setFolderMenuHotkeyError(const QString& error)
     emit hotkeyErrorChanged();
 }
 
-void SettingsEditor::setAutoUpdate(bool on)
-{
-    if (m_settings.autoUpdate == on)
-        return;
-    m_settings.autoUpdate = on;
-    commit();
-}
-
 void SettingsEditor::setClipboard(bool on)
 {
     if (m_settings.clipboard == on)
@@ -1037,7 +1127,7 @@ namespace {
 
 std::wstring taskbarButton()
 {
-    return QDir::toNativeSeparators(QCoreApplication::applicationDirPath() + u"/WinShunSearch.exe").toStdWString();
+    return QDir::toNativeSeparators(QCoreApplication::applicationDirPath() + u"/WinShunSearch.exe"_s).toStdWString();
 }
 
 } // namespace
@@ -1259,6 +1349,43 @@ void SettingsEditor::moveFileType(int index, int delta)
 void SettingsEditor::resetFileTypes()
 {
     m_settings.fileTypes = Settings::defaultFileTypes();
+    commit();
+}
+
+// One file type's excluded folders, expanded (%VARS%) for display.
+QStringList SettingsEditor::fileTypeExcludedFolders(int index) const
+{
+    if (index < 0 || index >= m_settings.fileTypes.size())
+        return {};
+    QStringList out;
+    for (const QString& folder : m_settings.fileTypes[index].excludedPaths)
+        out.append(displayPath(folder));
+    return out;
+}
+
+void SettingsEditor::addFileTypeExcludedFolder(int index)
+{
+    if (index < 0 || index >= m_settings.fileTypes.size())
+        return;
+    const HWND owner = m_window ? reinterpret_cast<HWND>(m_window->winId()) : nullptr;
+    const QString folder = shell::pickFolder(owner, tr("选择这类文件不搜索的文件夹"));
+    if (folder.isEmpty())
+        return;
+    QList<QString>& paths = m_settings.fileTypes[index].excludedPaths;
+    if (std::ranges::any_of(paths, [&](const QString& p) { return displayPath(p).compare(displayPath(folder), Qt::CaseInsensitive) == 0; }))
+        return;
+    paths.append(folder);
+    commit();
+}
+
+void SettingsEditor::removeFileTypeExcludedFolder(int index, int folder)
+{
+    if (index < 0 || index >= m_settings.fileTypes.size())
+        return;
+    QList<QString>& paths = m_settings.fileTypes[index].excludedPaths;
+    if (folder < 0 || folder >= paths.size())
+        return;
+    paths.removeAt(folder);
     commit();
 }
 
@@ -1804,6 +1931,35 @@ void SettingsEditor::removeExcludedName(int index)
     if (index < 0 || index >= m_settings.excludedNames.size())
         return;
     m_settings.excludedNames.removeAt(index);
+    commit();
+}
+
+bool SettingsEditor::addExcludedExtension(const QString& extension)
+{
+    // One extension, or several at once ("tmp log, .bak"): read as the
+    // content extensions are, each kept without its dot.
+    static const QRegularExpression separators(u"[\\s,;，；、]+"_s);
+    const QStringList parts = extension.split(separators, Qt::SkipEmptyParts);
+    bool any = false;
+    for (const QString& part : parts) {
+        QString value = part.trimmed().toLower();
+        while (value.startsWith(u'.'))
+            value.remove(0, 1);
+        if (value.isEmpty() || m_settings.excludedExtensions.contains(value))
+            continue;
+        m_settings.excludedExtensions.append(value);
+        any = true;
+    }
+    if (any)
+        commit();
+    return any;
+}
+
+void SettingsEditor::removeExcludedExtension(int index)
+{
+    if (index < 0 || index >= m_settings.excludedExtensions.size())
+        return;
+    m_settings.excludedExtensions.removeAt(index);
     commit();
 }
 

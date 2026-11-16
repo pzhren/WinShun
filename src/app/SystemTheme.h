@@ -2,6 +2,7 @@
 
 #include <QAbstractNativeEventFilter>
 #include <QColor>
+#include <QUrl>
 #include <QObject>
 #include <QtQml/qqmlregistration.h>
 
@@ -38,6 +39,11 @@ class SystemTheme : public QObject, public QAbstractNativeEventFilter {
     Q_PROPERTY(int headerHeight READ headerHeight NOTIFY uiSizeChanged FINAL)
     // How long the mouse rests before a tip shows (SPI_GETMOUSEHOVERTIME, ms).
     Q_PROPERTY(int hoverTime READ hoverTime NOTIFY changed FINAL)
+    // 自定义背景 (Settings::backgroundImage): the user's own picture under the
+    // search box and the rows, as a file: url; empty when there is none.
+    Q_PROPERTY(QUrl backgroundImage READ backgroundImage NOTIFY backgroundChanged FINAL)
+    // How strongly it shows through, 0…1 (Settings::backgroundOpacity / 100).
+    Q_PROPERTY(qreal backgroundOpacity READ backgroundOpacity NOTIFY backgroundChanged FINAL)
 
 public:
     explicit SystemTheme(QObject* parent = nullptr);
@@ -61,10 +67,14 @@ public:
     static QString uiSize() { return s_uiSize; }
     static int headerHeight();
     static void setUiSize(const QString& size);
+    QUrl backgroundImage() const { return s_backgroundImage; }
+    qreal backgroundOpacity() const { return s_backgroundOpacity; }
+    static void setBackground(const QString& path, int opacityPercent); // empty path: none
 
 signals:
     void changed();
     void uiSizeChanged(); // not changed(): the colours stay
+    void backgroundChanged();
 
 protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -74,6 +84,8 @@ private:
     static inline bool s_backdropAvailable = false;
     static inline bool s_backdropOn = true;
     static inline QString s_uiSize = QStringLiteral("standard");
+    static inline QUrl s_backgroundImage; // 自定义背景: the picture, or null
+    static inline qreal s_backgroundOpacity = 0.4;
     static inline SystemTheme* s_instance = nullptr; // the QML singleton
     QString m_iconFont;
 };

@@ -1,6 +1,7 @@
 #include "Launcher.h"
 
 #include "AppCatalog.h"
+#include "DiagnosticLog.h"
 #include "FileIconProvider.h"
 #include "FilePreview.h"
 #include "History.h"
@@ -10,9 +11,11 @@
 #include "PathText.h"
 #include "Query.h"
 #include "SearchEngine.h"
+#include "SearchHistory.h"
 #include "ShareLister.h"
 #include "SystemCatalog.h"
 #include "Unc.h"
+#include "Win32Util.h"
 #include "platform/DragOut.h"
 #include "platform/Shell.h"
 #include "platform/ShellContextMenu.h"
@@ -184,6 +187,20 @@ Launcher::Launcher(IndexService* index, AppCatalog* apps, SystemCatalog* places,
         m_pluginSlow = true;
         refreshStatus();
     });
+    // 自动清除最近搜索: the window's hiding starts it (handleHidden); once it
+    // fires the queries searched last are gone for good.
+    m_searchClearTimer.setSingleShot(true);
+    connect(&m_searchClearTimer, &QTimer::timeout, this, [this] {
+        if (!m_searchHistory)
+            return;
+        const int items = m_searchHistory->items().size();
+        m_searchHistory->clear();
+        ws::diagnostics::record(u"recent-searches-cleared"_s,
+            {{u"items"_s, items}, {u"visible"_s, onScreen()}});
+        emit historyChanged();
+        if (onScreen() && showsStartList() && m_startList == RecentSearches)
+            search(); // the list of recent searches empties where it is shown
+    });
     m_pluginErrorTimer.setSingleShot(true);
     m_pluginErrorTimer.setInterval(3s);
     connect(&m_pluginErrorTimer, &QTimer::timeout, this, [this] {
@@ -230,18 +247,18 @@ Launcher::Launcher(IndexService* index, AppCatalog* apps, SystemCatalog* places,
     connect(m_engine, &SearchEngine::driveProgress, this, &Launcher::onDriveProgress);
     connect(m_index, &IndexService::stateChanged, this, [this] {
         // A finished index can only improve the current results.
-        if (m_index->state() == IndexService::State::Ready && m_window && m_window->isVisible() && m_scope != Content)
+        if (m_index->state() == IndexService::State::Ready && onScreen() && m_scope != Content)
             search();
         refreshStatus();
     });
     connect(m_apps, &AppCatalog::changed, this, [this] {
         // Apps installed or removed (or the first list arrived): 全部 shows them.
-        if (m_window && m_window->isVisible() && m_scope == All)
+        if (onScreen() && m_scope == All)
             search();
         refreshStatus();
     });
     connect(m_places, &SystemCatalog::changed, this, [this] {
-        if (m_window && m_window->isVisible() && m_scope == All)
+        if (onScreen() && m_scope == All)
             search();
     });
     refreshStatus();
@@ -328,7 +345,7 @@ bool Launcher::moreAvailable() const
 
 void Launcher::loadMore()
 {
-    if (!moreAvailable() || searching() || !m_window || !m_window->isVisible())
+    if (!moreAvailable() || searching() || !onScreen())
         return;
     ++m_pages;
     search(true);
@@ -425,7 +442,7 @@ QString Launcher::approximateHeading() const
 // have taken them for gone.
 void Launcher::searchLeftOut(const QString& kind)
 {
-    if (!m_window || !m_window->isVisible() || !m_hintRunning.isEmpty())
+    if (!onScreen() || !m_hintRunning.isEmpty())
         return;
     const QVariantList offered = leftOutHints();
     if (std::none_of(offered.cbegin(), offered.cend(), [&](const QVariant& h) { return h.toMap()[u"kind"_s] == kind; }))
@@ -444,6 +461,8 @@ void Launcher::searchLeftOut(const QString& kind)
         request.text = m_query;
         request.scope = m_scope == Folders ? ws::Scope::Folders : ws::Scope::Files; // 全部: its files and folders
         request.extensions = fileExtensions();
+        request.excludedFolders = excludedFolders();
+    request.excludedExtensions = excludedExtensions();
         request.limit = kPage;
         request.walkDrive = kind.mid(kDriveHint.size());
         m_walkRunning = true;
@@ -451,6 +470,8 @@ void Launcher::searchLeftOut(const QString& kind)
     } else {
         request.text = m_scope == Content ? m_query.trimmed() : contentNeedle();
         request.scope = ws::Scope::Content;
+        request.excludedFolders = excludedFolders();
+    request.excludedExtensions = excludedExtensions();
         request.contentExtensions = m_contentExtensions;
         request.contentSizeLimits = m_contentSizeLimits;
         request.contentDocuments = m_contentDocuments;
@@ -584,7 +605,7 @@ void Launcher::setContentOptions(
         return;
     }
     emit scopeChanged(); // placeholder text mentions the extensions
-    if (enabled != wasEnabled && m_scope == All && m_window && m_window->isVisible())
+    if (enabled != wasEnabled && m_scope == All && onScreen())
         search(); // 全部: content matches below the names come or go
 }
 
@@ -598,7 +619,7 @@ void Launcher::setWebShortcuts(const WebShortcuts& shortcuts)
     // site may have changed its name or address) wait for the new answer.
     m_suggester.clearCache();
     dropSuggestions();
-    if (m_window && m_window->isVisible() && m_scope == All && !m_query.trimmed().isEmpty())
+    if (onScreen() && m_scope == All && !m_query.trimmed().isEmpty())
         search();
 }
 
@@ -610,7 +631,7 @@ void Launcher::setWebSuggestions(bool on)
     if (!on) {
         m_suggester.cancel();
         dropSuggestions();
-    } else if (m_window && m_window->isVisible() && m_scope == All && !m_query.trimmed().isEmpty()) {
+    } else if (onScreen() && m_scope == All && !m_query.trimmed().isEmpty()) {
         search();
     }
 }
@@ -624,7 +645,7 @@ void Launcher::setFavorites(Favorites* favorites)
         connect(favorites, &Favorites::changed, this, [this] {
             emit favoritesChanged();
             emit folderChipsChanged();
-            if (m_window && m_window->isVisible() && !m_keyword && m_scope != Content)
+            if (onScreen() && !m_keyword && m_scope != Content)
                 search(); // the rows refreshed in place: 收藏 comes or goes
         });
     }
@@ -647,7 +668,7 @@ void Launcher::setResultOptions(KindOrder kindOrder, bool showModified, bool thu
     m_showModified = showModified;
     m_numberKeys = keys;
     emit resultOptionsChanged();
-    if (reorder && m_window && m_window->isVisible() && m_scope != Content)
+    if (reorder && onScreen() && m_scope != Content)
         search();
 }
 
@@ -657,8 +678,53 @@ void Launcher::setPreferredTypes(const QStringList& types)
         return;
     m_preferredTypes = types;
     // Their order shows only ranked by match, among names (not 内容's rows).
-    if (m_window && m_window->isVisible() && m_scope != Content && rankBy() == RankBy::Match)
+    if (onScreen() && m_scope != Content && rankBy() == RankBy::Match)
         search();
+}
+
+void Launcher::setGlobalExcludedPaths(const QStringList& paths)
+{
+    if (paths == m_globalExcluded)
+        return;
+    m_globalExcluded = paths;
+    if (onScreen())
+        search(); // the rows refreshed without what is excluded now
+}
+
+void Launcher::setGlobalExcludedExtensions(const QStringList& extensions)
+{
+    if (extensions == m_globalExcludedExtensions)
+        return;
+    m_globalExcludedExtensions = extensions;
+    if (onScreen())
+        search(); // the rows refreshed without the extensions excluded now
+}
+
+// The 搜索范围 excluded extensions, for Request::excludedExtensions: files of
+// these are never listed, wherever the row came from.
+QStringList Launcher::excludedExtensions() const
+{
+    return m_globalExcludedExtensions;
+}
+
+// The kind chosen's own excluded folders (expanded), then the global ones:
+// nothing anywhere in the search comes from under them.
+QStringList Launcher::excludedFolders() const
+{
+    QStringList raw;
+    if (m_scope == Files && m_fileType >= 0)
+        raw.append(m_fileTypes[m_fileType].excludedPaths);
+    raw.append(m_globalExcluded);
+    QStringList out;
+    for (const QString& path : raw) {
+        QString folder = QString::fromStdWString(win32::expandEnvironment(path.trimmed().toStdWString()));
+        folder = QDir::toNativeSeparators(folder);
+        while (folder.size() > 3 && folder.endsWith(u'\\'))
+            folder.chop(1);
+        if (!folder.isEmpty())
+            out.append(folder);
+    }
+    return out;
 }
 
 void Launcher::setNumberHints(const QString& hints)
@@ -667,6 +733,30 @@ void Launcher::setNumberHints(const QString& hints)
         return;
     m_numberHints = hints;
     emit resultOptionsChanged();
+}
+
+void Launcher::setPreviewEmbedded(bool on)
+{
+    if (m_previewEmbedded == on)
+        return;
+    m_previewEmbedded = on;
+    emit previewEmbeddedChanged();
+}
+
+void Launcher::setPreviewPaneHeight(double h)
+{
+    if (qFuzzyCompare(m_previewPaneHeight, h))
+        return;
+    m_previewPaneHeight = h;
+    emit previewPaneHeightChanged();
+}
+
+void Launcher::setPreviewPaneWidth(double w)
+{
+    if (qFuzzyCompare(m_previewPaneWidth, w))
+        return;
+    m_previewPaneWidth = w;
+    emit previewPaneWidthChanged();
 }
 
 void Launcher::setNumberKeysLeft(unsigned digits)
@@ -683,7 +773,7 @@ void Launcher::setSort(Sort sort)
         return;
     m_sort = sort;
     emit sortChanged();
-    if (!m_window || !m_window->isVisible() || m_query.trimmed().isEmpty() || m_keyword)
+    if (!onScreen() || m_query.trimmed().isEmpty() || m_keyword)
         return; // hidden: handleShown() searches
     // 内容, every match on screen: put in the other order, not searched again
     // (that would read the files once more).
@@ -709,7 +799,7 @@ void Launcher::setStartList(StartList list)
         return;
     m_startList = list;
     emit startListChanged();
-    if (m_window && m_window->isVisible() && showsStartList())
+    if (onScreen() && showsStartList())
         search();
 }
 
@@ -740,11 +830,21 @@ void Launcher::switchOrder()
     }
     // The footer's switch shows what it is now; the status keeps its figures.
     if (showsStartList()) {
-        if (m_startList != NoStartList) // set so in the settings: kept so
-            setStartList(m_startList == RecentlyOpened ? RecentlyModified : RecentlyOpened);
+        // 最近打开 → 最近修改 → 最近搜索, round (不显示 is set so in the settings).
+        if (m_startList != NoStartList)
+            setStartList(m_startList == RecentlyOpened      ? RecentlyModified
+                : m_startList == RecentlyModified           ? RecentSearches
+                                                            : RecentlyOpened);
     }
     else if (!m_keyword) // a command's list is in the plugin's order
         setSort(static_cast<Sort>((m_sort + 1) % 3));
+}
+
+bool Launcher::onScreen() const
+{
+    // Put away to its button on the taskbar, the window is still "visible"
+    // (the taskbar needs that to keep the button); it is not up, though.
+    return m_window && m_window->isVisible() && !(m_window->windowState() & Qt::WindowMinimized);
 }
 
 void Launcher::setInTaskbarBox(bool on)
@@ -809,9 +909,11 @@ void Launcher::startOver()
 void Launcher::handleShown()
 {
     m_index->contentIndexer()->setSearchBoxOpen(true); // the files it searches are read before the indexer's
+    m_searchClearTimer.stop(); // looked at again: the recent searches stay
     m_statusPoll.start();
     m_apps->refresh(); // reads the list again only if apps were installed or removed
     m_places->refresh(); // ... if Windows was updated or its language changed
+    m_previewHidden = false; // each opening starts with the pane back (嵌入右侧)
     search(); // refresh: files may have changed, and "recent" certainly has
     emit historyChanged(); // things were opened since
     refreshFrequentApps();
@@ -902,6 +1004,12 @@ void Launcher::handleHidden()
     // Opened again, a page, as quick as ever; more as it is scrolled again.
     m_pages = 1;
     m_loadingMore = false;
+    // 自动清除最近搜索: nobody is looking; this long after, the queries
+    // searched last are cleared for good (0: they stay).
+    if (m_searchClearSeconds > 0 && m_searchHistory && !m_searchHistory->items().isEmpty()) {
+        m_searchClearTimer.start(m_searchClearSeconds * 1000);
+        ws::diagnostics::record(u"recent-searches-clear-start"_s, {{u"seconds"_s, m_searchClearSeconds}});
+    }
 }
 
 // Nothing is cleared up front: the rows on screen stay until results replace
@@ -926,6 +1034,11 @@ void Launcher::search(bool more)
         && (m_scope != Content || (m_contentFolder == m_shownContentFolder && pickKey(m_contentPick) == m_shownPick))
         && (!text.isEmpty() || m_startList == m_shownStartList) && panelKey() == m_shownPanelKey;
     m_replacePending = !m_refresh;
+    // 自动清除最近搜索: a search asked means somebody is using the launcher;
+    // the clearing starts over where it applies (the list left open, or the
+    // window hidden — handleHidden).
+    if (onScreen())
+        m_searchClearTimer.stop();
     // The text is the one shown (another scope, order, kind of file): nobody
     // is typing, so a content scan starts at once, without waiting for a pause.
     m_contentAtOnce = m_refresh || text == m_shownText;
@@ -950,11 +1063,13 @@ void Launcher::search(bool more)
     // space after a keyword is what opens its command (Catalog::match).
     startPluginQuery(m_query, std::move(keyword));
     suggest(); // after the plugins: a plugin's keyword takes the list, and no site is asked
-    m_withContent = m_contentEnabled && m_scope == All && !contentNeedle().isEmpty();
+    // 全部 keeps to names: what a file holds is the 内容 tab's (Tab from
+    // here), so that typing a person's name, say, lists what is called so,
+    // not every document that mentions it.
     m_unconfirmed.clear();
     // Quietly, unless the rows came from a content scan that was cut short
     // (window hidden mid-scan): that one still shows as the search it is.
-    const bool scans = m_scope == Content || m_withContent;
+    const bool scans = m_scope == Content;
     m_quiet = m_refresh && (!scans || m_scanComplete) && !m_loadingMore;
     if (!m_refresh)
         m_scanComplete = false;
@@ -1002,10 +1117,34 @@ void Launcher::search(bool more)
         return;
     }
 
+    // 最近搜索: nothing typed, the queries searched last in place of the
+    // files (only in 全部: 文件 and 内容 have no use for words alone). The
+    // engine is not asked — the rows are the search history's own.
+    if (text.isEmpty() && m_startList == RecentSearches && m_scope == All && !m_panel) {
+        m_engine->cancel();
+        m_requestId = 0;
+        m_pending = false;
+        m_contentRunning = false;
+        m_totalMatches = 0;
+        m_elapsedUs = 0;
+        m_moreNames = false;
+        m_moreContent = false;
+        showRows(recentSearchRows(), {});
+        // 闲置在这份列表上也清: the window left open on the recent searches
+        // empties them too, this long after it was last used (a search typed
+        // stops it; see the top of this function).
+        if (m_searchClearSeconds > 0 && m_searchHistory && !m_searchHistory->items().isEmpty())
+            m_searchClearTimer.start(m_searchClearSeconds * 1000);
+        refreshStatus();
+        return;
+    }
+
     SearchEngine::Request request;
     request.text = m_query;
     request.scope = static_cast<ws::Scope>(m_scope);
     request.extensions = fileExtensions();
+    request.excludedFolders = excludedFolders();
+    request.excludedExtensions = excludedExtensions();
     request.kindOrder = m_kindOrder;
     request.rankBy = rankBy();
     request.preferredTypes = m_preferredTypes;
@@ -1211,6 +1350,8 @@ void Launcher::startContentSearch()
     request.scope = ws::Scope::Content;
     request.rankBy = rankBy();
     request.maxContentResults = kPage * m_pages;
+    request.excludedFolders = excludedFolders();
+    request.excludedExtensions = excludedExtensions(); // the global ones, and the type chosen's
     request.contentExtensions = m_contentExtensions;
     request.contentSizeLimits = m_contentSizeLimits;
     request.contentDocuments = m_contentDocuments;
@@ -1262,10 +1403,7 @@ void Launcher::onResults(quint64 id, const SearchResults& results, qint64 total,
                 fresh.append(r);
         }
         m_results.append(fresh);
-        if (m_withContent)
-            startContentSearch(); // its page more too
-        else
-            m_loadingMore = false;
+        m_loadingMore = false;
         refreshStatus();
         return;
     }
@@ -1275,25 +1413,6 @@ void Launcher::onResults(quint64 id, const SearchResults& results, qint64 total,
     if (m_refresh) {
         for (const SearchResult& r : rows)
             names.insert(r.path);
-    }
-    if (m_refresh && m_withContent) {
-        // Keep last scan's content matches below the names until the new
-        // scan finds them again (or finishes without them), rather than
-        // dropping them only to add them back a moment later.
-        // By time, each among the files where it belongs.
-        const RankBy by = rankBy();
-        for (int row = 0; row < m_results.count(); ++row) {
-            const SearchResult* r = m_results.at(row);
-            if (r->line > 0 && !names.contains(r->path)) {
-                const int at = by == RankBy::Match
-                    ? static_cast<int>(rows.size())
-                    : timePlace(static_cast<int>(rows.size()), [&](int i) -> const SearchResult& { return rows.at(i); },
-                          *r, 0, by, m_kindOrder);
-                rows.insert(at, *r);
-                if (!m_leftOutFound.contains(r->path)) // a one-off brought it: the scan will not read that file
-                    m_unconfirmed.insert(r->path);
-            }
-        }
     }
     if (m_refresh) {
         // Likewise the rows a walk of a drive brought (searchLeftOut): the
@@ -1318,15 +1437,6 @@ void Launcher::onResults(quint64 id, const SearchResults& results, qint64 total,
     m_totalMatches = total;
     if (!m_refresh)
         m_elapsedUs = elapsedUs; // a refresh keeps the figure the user has seen
-    // Content search starts only now: a new request cancels the running one,
-    // and the name search must finish first. Before the rows change, so the
-    // view knows more are on the way and does not shrink in between.
-    if (m_withContent) {
-        if (m_refresh || m_contentAtOnce)
-            startContentSearch();
-        else
-            m_contentDebounce.start();
-    }
     // Rows found by how their names read (nothing is named as typed): the
     // heading says so (approximateHeading), and the names are highlighted by
     // the pinyin, as the result list reads "bg" back into 报告.
@@ -1498,7 +1608,7 @@ void Launcher::setPanel(bool on)
     m_panel = on;
     emit panelChanged();
     refreshStatus();
-    if (m_window && m_window->isVisible() && !m_keyword)
+    if (onScreen() && !m_keyword)
         search(); // the rows as the panel (or the box) lists them; the same ones stay where they are
 }
 
@@ -1514,7 +1624,7 @@ void Launcher::setPinned(bool on)
     m_pinned = on;
     emit pinnedChanged();
     // Said in the footer as well: Ctrl+T leaves no other trace near the keys.
-    if (m_window && m_window->isVisible())
+    if (onScreen())
         flash(on ? tr("已钉住：点别处、打开文件后都不收起，按 Esc 关闭") : tr("已取消钉住"));
 }
 
@@ -1744,7 +1854,7 @@ void Launcher::sortBy(int key)
         return;
     m_panelSort = order;
     emit panelSortChanged();
-    if (m_panel && m_window && m_window->isVisible() && !m_keyword)
+    if (m_panel && onScreen() && !m_keyword)
         search();
 }
 
@@ -1814,6 +1924,8 @@ void Launcher::refreshStatus()
         emit statusChanged(); // busy/searching may have changed
     }
     refreshKeyHints(); // the rows changed with whatever brought us here
+    if (m_previewEmbedded && !m_previewHidden)
+        followPreview(); // 嵌入右侧: the pane opens with the first results, and follows a new list
 }
 
 void Launcher::setCurrentRow(int row)
@@ -1932,7 +2044,7 @@ void Launcher::setFileTypes(const FileTypes& types)
     emit fileTypesChanged();
     emit scopeChanged(); // the placeholder names the kind
     // Its extensions changed: listed again (a refresh when they did not).
-    if (m_fileType >= 0 && m_window && m_window->isVisible())
+    if (m_fileType >= 0 && onScreen())
         search();
 }
 
@@ -2310,7 +2422,14 @@ namespace {
 // a place, a web page or a plugin's row; not one gone or out of reach).
 std::optional<FilePreview::Item> previewItem(const SearchResult* r)
 {
-    if (!r || r->isApp() || r->missing || r->offline || r->path.isEmpty())
+    if (!r || r->path.isEmpty())
+        return std::nullopt;
+    // A place (a page of Settings, a Control Panel item) or a packaged app
+    // (shell:AppsFolder\…) has no file of its own: nothing is known to show.
+    // Everything else goes — a file, a folder, a classic app with its exe (the
+    // pane tells what is known about that file), one gone or resting in the
+    // cloud (the pane says which).
+    if (isPlacePath(r->path) || isAppLaunchPath(r->path) || r->path.contains(u"://"_s))
         return std::nullopt;
     return FilePreview::Item {r->path, r->name, r->isDir};
 }
@@ -2347,16 +2466,19 @@ void Launcher::togglePreview(int row)
     // Open: the same key closes it, unless it was pressed for another file
     // (the row under the pointer), which it then shows.
     if (m_preview->isOpen()) {
-        if (!item || m_preview->isShowing(item->path))
+        if (!item || m_preview->isShowing(item->path)) {
             m_preview->close();
-        else
+            m_previewHidden = false; // Alt+P closed it; the next search brings it back (嵌入右侧)
+        } else {
             m_preview->show(*item);
+        }
         return;
     }
     if (!item) {
         flash(r ? tr("这一行没有可预览的文件") : tr("没有选中的结果"));
         return;
     }
+    m_previewHidden = false;
     m_preview->show(*item);
 }
 
@@ -2366,14 +2488,26 @@ bool Launcher::closePreview()
         m_preview->forgetClosedExternal(); // Esc then goes on to the launcher
     if (!m_preview || !m_preview->isOpen())
         return false;
+    // Embedded (嵌入右侧): the pane lives inside the launcher's window, so it
+    // goes when the launcher does (its preview handler's window must not stay
+    // up over the desktop).
     m_preview->close();
     return true;
 }
 
 void Launcher::followPreview()
 {
-    if (m_preview && m_preview->isOpen())
-        m_preview->follow(previewItem(m_results.at(m_currentRow)));
+    if (!m_preview)
+        return;
+    const std::optional<FilePreview::Item> item = previewItem(m_results.at(m_currentRow));
+    if (m_preview->isOpen()) {
+        m_preview->follow(item);
+        return;
+    }
+    // 嵌入右侧: the pane opens with the results and follows a new list; Alt+P
+    // taking it away lasts until the next search (m_previewHidden).
+    if (m_previewEmbedded && !m_previewHidden && item)
+        m_preview->show(*item);
 }
 
 void Launcher::keyboardMoved()
@@ -2483,6 +2617,11 @@ void Launcher::perform(const SearchResult& result, Action action)
     }
     if (action == Alternate)
         action = Open; // Shift+Enter means something to a plugin's row only
+    // Opened with words typed (a result of the search, an app, a place, the
+    // web): the query goes into the recent searches. A recent search's own
+    // row is a plugin's, and fills the box instead of opening.
+    if ((action == Open || action == RunAsAdmin) && !r.isPlugin() && !m_keyword)
+        recordSearch(m_query.trimmed());
     // A favorite app uninstalled, a place gone with an update of Windows.
     if (r.missing && r.isApp() && (action == Open || action == RunAsAdmin || action == Reveal || action == CopyItem)) {
         flash(tr("“%1” 已不存在；右键可从收藏夹移除").arg(r.name));
@@ -2774,6 +2913,8 @@ void Launcher::performMany(const SearchResults& items, Action action)
     };
     if (action == Alternate)
         action = Open;
+    if (action == Open) // the selection opened: the query was used for it too
+        recordSearch(m_query.trimmed());
     if (action == AddFavorite && m_favorites) {
         FavoriteList favorites;
         for (const SearchResult& r : items) {
@@ -2941,8 +3082,67 @@ void Launcher::setRecordHistory(bool on)
     m_recordHistory = on;
     emit historyChanged();
     refreshFrequentApps();
-    if (m_window && m_window->isVisible())
+    if (onScreen())
         search(); // "最近" rows come or go
+}
+
+void Launcher::setSearchHistory(SearchHistory* history)
+{
+    m_searchHistory = history;
+}
+
+void Launcher::setSearchClearSeconds(int seconds)
+{
+    seconds = std::clamp(seconds, 0, 24 * 60 * 60);
+    if (seconds == m_searchClearSeconds)
+        return;
+    m_searchClearSeconds = seconds;
+    if (seconds == 0)
+        m_searchClearTimer.stop();
+    else if (m_window && !onScreen() && m_searchHistory && !m_searchHistory->items().isEmpty())
+        m_searchClearTimer.start(seconds * 1000); // hidden already: the clearing starts over
+}
+
+// Opened a result with words typed: the query goes into the recent searches
+// (SearchHistory), for the 最近搜索 start list to bring back.
+void Launcher::recordSearch(const QString& query)
+{
+    if (!m_searchHistory || !m_recordHistory || query.isEmpty())
+        return;
+    m_searchHistory->record(query);
+    m_searchClearTimer.stop(); // searched just now: the clearing waits for the next hiding
+    ws::diagnostics::record(u"recent-searches-record"_s, {}); // the query itself is never journaled
+}
+
+// The 最近搜索 rows, newest first. A plugin's row with nothing of its own to
+// run: Enter puts the query back in the box and searches it (performPlugin's
+// setQuery), Tab completes it; the badge says where it is from.
+SearchResults Launcher::recentSearchRows() const
+{
+    SearchResults rows;
+    if (!m_searchHistory)
+        return rows;
+    constexpr int kShownSearches = 8;
+    for (const QString& query : m_searchHistory->items()) {
+        if (rows.size() >= kShownSearches)
+            break;
+        auto row = std::make_shared<PluginRow>();
+        row->pluginId = u"winshun"_s;
+        row->commandId = u"recent-search"_s;
+        row->itemId = query;
+        row->source = tr("最近搜索");
+        row->icon = u"glyph:U+E81C"_s; // History
+        row->autocomplete = query + u' ';
+        row->setQuery = query;
+        SearchResult r;
+        r.name = query;
+        r.path = plugin::pluginPath(row->pluginId, row->commandId, row->itemId);
+        r.app = AppKind::Plugin;
+        r.exact = true;
+        r.plugin = PluginRowRef{std::move(row)};
+        rows.append(r);
+    }
+    return rows;
 }
 
 bool Launcher::canClearHistory() const
@@ -2953,6 +3153,8 @@ bool Launcher::canClearHistory() const
 void Launcher::clearHistory()
 {
     m_history->clear();
+    if (m_searchHistory)
+        m_searchHistory->clear(); // the queries searched last go with the files opened
     emit historyChanged();
     refreshFrequentApps();
     m_results.setSelection({});
@@ -3179,7 +3381,6 @@ QVariantList Launcher::menuItems(int row) const
     items.append(entry(Reveal, tr("打开所在位置"), u"Ctrl+Enter"_s, u"\uE8DA"_s));
     if (!r->missing && !r->offline)
         items.append(entry(Preview, tr("预览"), u"Alt+P"_s, u"\uE890"_s)); // View
-    items.append(entry(OpenTerminal, tr("在终端中打开"), QString(), u"\uE756"_s)); // CommandPrompt
     if (r->isDir && m_contentEnabled && !r->path.startsWith(u"\\\\"_s)) // shares: contents are not read there
         items.append(entry(SearchInFolder, tr("在此文件夹中搜内容"), QString(), u"\uE721"_s)); // Search
     if (!r->isDir && shell::canRunAsAdministrator(r->path))
@@ -3251,7 +3452,7 @@ void Launcher::showSystemMenu(int row, const QVariant& globalPos)
 
 void Launcher::runSystemMenu(const QStringList& paths, std::optional<QPointF> globalPos)
 {
-    if (!m_window || !m_window->isVisible() || m_systemMenuOpen)
+    if (!onScreen() || m_systemMenuOpen)
         return;
     POINT pos {};
     if (globalPos) {
@@ -3310,7 +3511,7 @@ void Launcher::runSystemMenu(const QStringList& paths, std::optional<QPointF> gl
             }
             DWORD pid = 0;
             ::GetWindowThreadProcessId(::GetForegroundWindow(), &pid);
-            if (m_window->isVisible() && pid != ::GetCurrentProcessId()) {
+            if (onScreen() && pid != ::GetCurrentProcessId()) {
                 m_systemCommand = false;
                 emit dismissRequested();
             }

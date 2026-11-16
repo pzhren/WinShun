@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QObject>
 #include <QPointer>
+#include <QTimer>
 #include <QVariantList>
 #include <QWindow>
 #include <QtQml/qqmlregistration.h>
@@ -100,6 +101,7 @@ class SettingsEditor : public QObject {
     Q_PROPERTY(QString indexServiceMessage READ indexServiceMessage NOTIFY indexAccessStateChanged FINAL)
     Q_PROPERTY(QStringList excludedPaths READ excludedPaths NOTIFY changed FINAL) // expanded, for display
     Q_PROPERTY(QStringList excludedNames READ excludedNames NOTIFY changed FINAL)
+    Q_PROPERTY(QStringList excludedExtensions READ excludedExtensions NOTIFY changed FINAL)
     Q_PROPERTY(bool contentSearch READ contentSearch WRITE setContentSearch NOTIFY changed FINAL)
     Q_PROPERTY(QStringList contentExtensions READ contentExtensions NOTIFY changed FINAL)
     // Size limits in MB by kind of file (ContentSizeLimits::Kind: text, code, data),
@@ -120,11 +122,24 @@ class SettingsEditor : public QObject {
     Q_PROPERTY(bool thumbnails READ thumbnails WRITE setThumbnails NOTIFY changed FINAL)
     Q_PROPERTY(bool webSuggestions READ webSuggestions WRITE setWebSuggestions NOTIFY changed FINAL)
     Q_PROPERTY(QString sort READ sort WRITE setSort NOTIFY changed FINAL) // match | newest | oldest
-    Q_PROPERTY(QString startList READ startList WRITE setStartList NOTIFY changed FINAL) // opened | modified | none
+    Q_PROPERTY(QString startList READ startList WRITE setStartList NOTIFY changed FINAL) // opened | modified | searched | none
+    // 自动清除最近搜索: the launcher's hiding clears the recent searches this
+    // many seconds after; 0 keeps them until cleared by hand.
+    Q_PROPERTY(int searchClearSeconds READ searchClearSeconds WRITE setSearchClearSeconds NOTIFY changed FINAL)
     Q_PROPERTY(bool clearOnOpen READ clearOnOpen WRITE setClearOnOpen NOTIFY changed FINAL)
     Q_PROPERTY(QString numberKeys READ numberKeys WRITE setNumberKeys NOTIFY changed FINAL) // ctrl | alt | off
     Q_PROPERTY(QString numberHints READ numberHints WRITE setNumberHints NOTIFY changed FINAL) // held | always | off
     Q_PROPERTY(QString previewWith READ previewWith WRITE setPreviewWith NOTIFY changed FINAL) // auto | builtin
+    // Embedded: the always-on preview is drawn inside the launcher's window
+    // (the split pane), not in a window of its own beside it.
+    Q_PROPERTY(bool previewEmbedded READ previewEmbedded WRITE setPreviewEmbedded NOTIFY changed FINAL)
+    // auto | libreoffice | office: the program that turns an Office document
+    // into the PDF the pane draws (OfficeConvert).
+    Q_PROPERTY(QString officeEngine READ officeEngine WRITE setOfficeEngine NOTIFY changed FINAL)
+    // What this machine has, for the row's description and its button: looked
+    // up again when the page opens, and while an install runs.
+    Q_PROPERTY(bool libreOfficeInstalled READ libreOfficeInstalled NOTIFY previewEnginesChanged FINAL)
+    Q_PROPERTY(bool officeInstalled READ officeInstalled NOTIFY previewEnginesChanged FINAL)
     // Which of the chosen number keys are other programs' hotkeys, or Win顺's
     // own shortcuts, said for the user; empty when none (refreshNumberKeys).
     Q_PROPERTY(QString numberKeysNote READ numberKeysNote NOTIFY numberKeysNoteChanged FINAL)
@@ -194,7 +209,10 @@ class SettingsEditor : public QObject {
     Q_PROPERTY(QString taskbarIcon READ taskbarIcon WRITE setTaskbarIcon NOTIFY changed FINAL) // color | mono
     Q_PROPERTY(QString uiSize READ uiSize WRITE setUiSize NOTIFY changed FINAL) // compact | standard | roomy
     Q_PROPERTY(QString corners READ corners WRITE setCorners NOTIFY changed FINAL) // round | square
-    Q_PROPERTY(bool autoUpdate READ autoUpdate WRITE setAutoUpdate NOTIFY changed FINAL)
+    // 自定义背景: a picture of the user's own under the search box and the
+    // rows (a file path; empty: none), and how strongly it shows (0…100).
+    Q_PROPERTY(QString backgroundImage READ backgroundImage WRITE setBackgroundImage NOTIFY changed FINAL)
+    Q_PROPERTY(int backgroundOpacity READ backgroundOpacity WRITE setBackgroundOpacity NOTIFY changed FINAL)
     Q_PROPERTY(QString backupFolder READ backupFolder NOTIFY changed FINAL) // empty: no backups (see Backup)
     Q_PROPERTY(bool restartRequired READ restartRequired NOTIFY changed FINAL)
     Q_PROPERTY(bool isDefault READ isDefault NOTIFY changed FINAL)
@@ -342,6 +360,7 @@ public:
     Q_INVOKABLE void uninstallIndexService() { emit indexServiceInstallRequested(false); }
     QStringList excludedPaths() const;
     QStringList excludedNames() const { return m_settings.excludedNames; }
+    QStringList excludedExtensions() const { return m_settings.excludedExtensions; }
     bool contentSearch() const { return m_settings.contentSearch; }
     void setContentSearch(bool on);
     QStringList contentExtensions() const { return m_settings.contentExtensions; }
@@ -370,9 +389,11 @@ public:
     void setUiSize(const QString& size);
     QString corners() const { return m_settings.corners; }
     void setCorners(const QString& corners);
-    bool autoUpdate() const { return m_settings.autoUpdate; }
+    QString backgroundImage() const { return m_settings.backgroundImage; }
+    void setBackgroundImage(const QString& path);
+    int backgroundOpacity() const { return m_settings.backgroundOpacity; }
+    void setBackgroundOpacity(int percent);
     QString backupFolder() const { return QDir::toNativeSeparators(m_settings.backupFolder); }
-    void setAutoUpdate(bool on);
     bool restartRequired() const { return Settings::resolveRenderer(m_settings.renderer) != m_runningRenderer; }
     bool isDefault() const;
     QString dataFolder() const { return Settings::dataDir(); }
@@ -442,6 +463,8 @@ public:
     void setSort(const QString& sort);
     QString startList() const { return m_settings.startList; }
     void setStartList(const QString& list);
+    int searchClearSeconds() const { return m_settings.searchClearSeconds; }
+    void setSearchClearSeconds(int seconds);
     bool clearOnOpen() const { return m_settings.clearOnOpen; }
     void setClearOnOpen(bool on);
     QString numberKeys() const { return m_settings.numberKeys; }
@@ -451,6 +474,17 @@ public:
     QString numberKeysNote() const { return m_numberKeysNote; }
     QString previewWith() const { return m_settings.previewWith; }
     void setPreviewWith(const QString& with);
+    bool previewEmbedded() const { return m_settings.previewEmbedded; }
+    void setPreviewEmbedded(bool on);
+    QString officeEngine() const { return m_settings.previewOfficeEngine; }
+    void setOfficeEngine(const QString& engine);
+    bool libreOfficeInstalled() const;
+    bool officeInstalled() const;
+    // Looks again at what is installed (the row shows it; a slow install is
+    // watched for a while after installLibreOffice).
+    Q_INVOKABLE void refreshPreviewEngines();
+    // Starts installing LibreOffice (winget, else its download page).
+    Q_INVOKABLE void installLibreOffice();
     // Looks again at which number keys are taken (as the window comes to the
     // front: a program may have been started or closed meanwhile).
     Q_INVOKABLE void refreshNumberKeys();
@@ -499,6 +533,11 @@ public:
     Q_INVOKABLE void removeFileType(int index);
     Q_INVOKABLE void moveFileType(int index, int delta); // up (-1) or down (1) the strip
     Q_INVOKABLE void resetFileTypes();
+    // 排除路径 of one file type (its index here): where that kind of file is
+    // never found, on top of the 搜索范围 ones. Expanded, for display.
+    Q_INVOKABLE QStringList fileTypeExcludedFolders(int index) const;
+    Q_INVOKABLE void addFileTypeExcludedFolder(int index); // asks for the folder
+    Q_INVOKABLE void removeFileTypeExcludedFolder(int index, int folder);
 
     QVariantList shares() const;
     QVariantList knownShares() const;
@@ -531,6 +570,8 @@ public:
     Q_INVOKABLE void removeExcludedPath(int index);
     Q_INVOKABLE bool addExcludedName(const QString& name);
     Q_INVOKABLE void removeExcludedName(int index);
+    Q_INVOKABLE bool addExcludedExtension(const QString& extension);
+    Q_INVOKABLE void removeExcludedExtension(int index);
     Q_INVOKABLE void removeDialogBarExcludedApp(int index);
     Q_INVOKABLE bool addContentExtensions(const QString& text); // "md, .log *.csv"
     Q_INVOKABLE void removeContentExtension(int index);
@@ -552,6 +593,8 @@ public:
     // Asks for a PNG, ICO or SVG to show for a shortcut and keeps it: {icon: its
     // name} to save with it, {error: why not}, or {} when cancelled.
     Q_INVOKABLE QVariantMap pickWebIcon();
+    // 自定义背景: asks for a picture and puts it under the launcher's text.
+    Q_INVOKABLE void chooseBackgroundImage();
     // SVG-looking clipboard text for the form's editable field; unrelated
     // text and oversized contents leave it empty.
     Q_INVOKABLE QString webIconClipboardText() const;
@@ -638,6 +681,7 @@ signals:
     void fileManagersChanged();
     void clipboardCountChanged();
     void numberKeysNoteChanged();
+    void previewEnginesChanged(); // what is installed for Office previews changed
     void doubleCtrlClashChanged();
     void opusFolderMenuChanged();
     void opusRestarted(); // setOpusFolderMenu started Opus again: it came to the front
@@ -712,6 +756,8 @@ private:
     QVariantList m_mcpClients;
     QString m_mcpRelayPath;
     QString m_mcpMessage;
+    QTimer m_engineWatch; // an install was started: look for soffice every few seconds
+    int m_engineWatchedTicks = 0;
     PluginSettings* m_plugins = nullptr; // a child
     FavoritesSettings* m_favorites = nullptr; // a child
 };

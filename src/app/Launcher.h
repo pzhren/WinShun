@@ -31,6 +31,7 @@ namespace ws {
 class FilePreview;
 class History;
 class IndexService;
+class SearchHistory;
 class SystemCatalog;
 namespace plugin {
 class Host;
@@ -87,8 +88,8 @@ class Launcher : public QObject {
     // last written (the footer's switch, Ctrl+S). 全部 keeps its apps,
     // places and web shortcuts first.
     Q_PROPERTY(Sort sort READ sort WRITE setSort NOTIFY sortChanged FINAL)
-    // With nothing typed: what was opened last, or the files written last
-    // (the footer's switch there, Ctrl+S).
+    // With nothing typed: what was opened last, the files written last, or
+    // the queries searched last (the footer's switch there, Ctrl+S).
     Q_PROPERTY(StartList startList READ startList WRITE setStartList NOTIFY startListChanged FINAL)
     // Rows say when each file or folder was last written.
     Q_PROPERTY(bool showModified READ showModified NOTIFY resultOptionsChanged FINAL)
@@ -106,6 +107,19 @@ class Launcher : public QObject {
     // The row the keyboard is on (Main.qml's), -1 for none: content matches
     // coming in are placed by how well they match, but only below it.
     Q_PROPERTY(int currentRow READ currentRow WRITE setCurrentRow NOTIFY currentRowChanged FINAL)
+    // The file preview shown beside the rows (FilePreview; embedded in the
+    // launcher's window as the right-hand pane): its content properties are
+    // read from Main.qml to draw the pane, its show/follow driven here.
+    Q_PROPERTY(FilePreview* preview READ preview CONSTANT FINAL)
+    // Whether the always-on preview is drawn inside the launcher's window as
+    // the right-hand pane (Settings::previewEmbedded), not in a window of its own.
+    Q_PROPERTY(bool previewEmbedded READ previewEmbedded NOTIFY previewEmbeddedChanged FINAL)
+    // The launcher's window height the user dragged to, and the width of the
+    // embedded preview pane, remembered between runs (Settings; 0 = not set).
+    // Main.qml reads them to size the window and the pane, and writes them as
+    // the user drags.
+    Q_PROPERTY(double previewPaneHeight READ previewPaneHeight WRITE setPreviewPaneHeight NOTIFY previewPaneHeightChanged FINAL)
+    Q_PROPERTY(double previewPaneWidth READ previewPaneWidth WRITE setPreviewPaneWidth NOTIFY previewPaneWidthChanged FINAL)
     // The footer's key hints for the row the keyboard is on: what Enter
     // does ("打开", a plugin action's name; empty for a row Enter does
     // nothing on), what the second key does with its name ("Ctrl+Enter" /
@@ -218,10 +232,12 @@ public:
         PluginAction = 100
     };
     Q_ENUM(Action)
-    // As ws::RankBy and ws::StartList.
+    // As ws::RankBy. With nothing typed: what was opened last, the files
+    // written last, the queries searched last (the footer's switch there,
+    // Ctrl+S), or nothing (only the favorites).
     enum Sort { BestMatch, NewestFirst, OldestFirst };
     Q_ENUM(Sort)
-    enum StartList { RecentlyOpened, RecentlyModified, NoStartList }; // none: only the favorites
+    enum StartList { RecentlyOpened, RecentlyModified, RecentSearches, NoStartList }; // none: only the favorites
     Q_ENUM(StartList)
 
     Launcher(IndexService* index, AppCatalog* apps, SystemCatalog* places, SearchEngine* engine, History* history,
@@ -250,6 +266,13 @@ public:
     void setScope(Scope scope);
     int currentRow() const { return m_currentRow; }
     void setCurrentRow(int row);
+    FilePreview* preview() const { return m_preview; }
+    bool previewEmbedded() const { return m_previewEmbedded; }
+    double previewPaneHeight() const { return m_previewPaneHeight; }
+    double previewPaneWidth() const { return m_previewPaneWidth; }
+    void setPreviewPaneHeight(double h);
+    void setPreviewPaneWidth(double w);
+    void setPreviewEmbedded(bool on);
     QVariantMap keyHints() const { return m_keyHints; }
     ResultModel* results() { return &m_results; }
     QString statusText() const { return m_flash.isEmpty() ? m_status : m_flash; }
@@ -286,13 +309,16 @@ public:
     bool waitingForNames() const { return m_pending && !m_contentRunning; }
     QString placeholder() const;
     QString contentFilesLabel() const; // ".txt / .md / .log 等文件"
-    // Whether the current query also looks inside files: always in 内容,
-    // and in 全部 unless the query is name syntax or starts with a web
-    // shortcut's keyword (see contentNeedle()).
-    bool searchesContent() const { return m_scope == Content || m_withContent; }
+    // Whether the current query looks inside files: 内容 only. 全部 keeps to
+    // names (a file's contents are the 内容 tab's, Tab from here).
+    bool searchesContent() const { return m_scope == Content; }
     bool contentEnabled() const { return m_contentEnabled; }
 
     void setWindow(QWindow* window) { m_window = window; }
+    // Up for the user: shown, and not put away to its button on the taskbar
+    // (minimized: isVisible() is true of that too). Everything here that asks
+    // whether the user can see the launcher asks this, not isVisible().
+    bool onScreen() const;
     // `enabled` false: no 内容, and 全部 finds names only; a launcher in 内容 goes to 全部.
     void setContentOptions(bool enabled, QStringList extensions, const ContentSizeLimits& sizeLimits,
         bool inLowPriority, bool documents);
@@ -307,10 +333,19 @@ public:
     void setResultOptions(KindOrder kindOrder, bool showModified, bool thumbnails, const QString& numberKeys);
     // 优先显示的文件类型 (Settings::preferredTypes): searched again in the new order when shown.
     void setPreferredTypes(const QStringList& types);
+    // 搜索范围的全局排除 (Settings::excludedPaths, as kept, %VARS% allowed):
+    // no search lists anything under them, with the chosen file type's own
+    // (FileType::excludedPaths) on top. Searched again when they changed.
+    void setGlobalExcludedPaths(const QStringList& paths);
+    void setGlobalExcludedExtensions(const QStringList& extensions);
     Sort sort() const { return m_sort; }
     void setSort(Sort sort);
     StartList startList() const { return m_startList; }
     void setStartList(StartList list);
+    // The queries searched last (SearchHistory), for the 最近搜索 start list,
+    // and the seconds after which the window's hiding clears them (0: never).
+    void setSearchHistory(SearchHistory* history);
+    void setSearchClearSeconds(int seconds);
     // Ctrl+S: with nothing typed, the other start list; else the next order
     // (best match, newest, oldest).
     Q_INVOKABLE void switchOrder();
@@ -470,6 +505,9 @@ public:
 
 signals:
     void queryChanged();
+    void previewEmbeddedChanged();
+    void previewPaneHeightChanged();
+    void previewPaneWidthChanged();
     void scopeChanged();
     void statusChanged();
     void shown();
@@ -585,6 +623,11 @@ private:
     const SearchResult* enterableFolder(int row) const;
     void remember(const QString& path); // opened: into the history, if it is kept
     void forgetRecent(const QStringList& paths);
+    // Opened a result with words typed: the query into the search history
+    // (SearchHistory), if it is kept. The rows of that history, for the
+    // 最近搜索 start list (Enter puts the query back in the box).
+    void recordSearch(const QString& query);
+    SearchResults recentSearchRows() const;
     // showSystemMenu's work, from the event loop; afterwards forgetGone drops
     // the rows whose files the command took away (删除, 剪切 and paste
     // elsewhere), now and a little later (a confirmation, a progress window).
@@ -664,10 +707,9 @@ private:
     qint64 m_totalMatches = 0;
     qint64 m_elapsedUs = 0;
     bool m_contentRunning = false;
-    bool m_withContent = false; // 全部: content matches follow the name matches
     int m_contentScanned = 0;
     int m_contentTotal = 0;
-    int m_contentHits = 0; // 全部: content rows added below the name matches
+    int m_contentHits = 0; // 内容: the matches the scan has found so far
     // Pages of rows asked for (kPage each): back to 1 for a new list.
     int m_pages = 1;
     bool m_loadingMore = false; // the current search is loadMore()'s: its new rows go at the end
@@ -698,6 +740,11 @@ private:
     static QString fileTypeKey(const FileType& type); // as fileChoice names it
     int fileTypeIndex(const QString& key) const; // -1: none
     QStringList fileExtensions() const; // the kind chosen's, in 文件; none otherwise
+    // The folders nothing is listed under: the kind chosen's own expanded
+    // (FileType::excludedPaths), then the global ones (m_globalExcluded).
+    QStringList excludedFolders() const;
+    // The 搜索范围 excluded extensions ("tmp"), for Request::excludedExtensions.
+    QStringList excludedExtensions() const;
     // 内容 in a folder chosen (a chip, a folder's row: SearchInFolder), as a
     // full path; empty: everywhere. Kept while the app runs, as the kind of
     // file is. A folder named among the words goes first (ContentFolderSpec).
@@ -725,8 +772,13 @@ private:
     bool m_recordHistory = true;
     KindOrder m_kindOrder = KindOrder::FilesFirst;
     QStringList m_preferredTypes; // files of these types first among those that match about as well
+    QStringList m_globalExcluded; // as kept (%VARS%); expanded for the requests (excludedFolders())
+    QStringList m_globalExcludedExtensions; // "tmp"; handed to the requests as kept
     Sort m_sort = BestMatch;
     StartList m_startList = RecentlyOpened;
+    SearchHistory* m_searchHistory = nullptr; // the queries searched last (may be none)
+    int m_searchClearSeconds = 30; // the window's hiding clears them this long after (0: never)
+    QTimer m_searchClearTimer;
     bool m_showModified = true;
     QString m_numberKeys = QStringLiteral("ctrl");
     QString m_numberHints = QStringLiteral("held");
@@ -779,6 +831,10 @@ private:
     std::uint64_t m_pluginRequest = 0; // actions sent
 
     QPointer<FilePreview> m_preview;
+    bool m_previewEmbedded = false; // Settings::previewEmbedded: the pane is inside the launcher's window
+    double m_previewPaneHeight = 0; // the launcher's window height the user dragged to, remembered between runs
+    double m_previewPaneWidth = 0;  // the embedded preview pane's width, remembered between runs
+    bool m_previewHidden = false; // Alt+P took the docked pane away for now: not opened again until the launcher closes
     QPoint m_pointerAtKeys {-1, -1}; // where the pointer was when the keyboard last moved (keyboardMoved)
 };
 

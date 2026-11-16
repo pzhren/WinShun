@@ -284,6 +284,7 @@ void writeFileTypes(QSettings& s, const FileTypes& types)
         if (!types[i].name.isEmpty())
             s.setValue(u"Name"_s, types[i].name);
         s.setValue(u"Extensions"_s, types[i].extensions.join(u' '));
+        s.setValue(u"ExcludedFolders"_s, types[i].excludedPaths);
     }
     s.endArray();
 }
@@ -304,6 +305,10 @@ FileTypes readFileTypes(QSettings& s, const FileTypes& fallback)
         type.id = s.value(u"Id"_s).toString().trimmed();
         type.name = s.value(u"Name"_s).toString().trimmed();
         type.extensions = Settings::fileExtensions(s.value(u"Extensions"_s).toString());
+        for (const QString& folder : s.value(u"ExcludedFolders"_s).toStringList()) {
+            if (!folder.trimmed().isEmpty())
+                type.excludedPaths.append(folder.trimmed());
+        }
         const bool builtIn = std::ranges::any_of(kBuiltInFileTypes, [&](const BuiltInFileType& b) { return type.id == QLatin1StringView(b.id); });
         if (!builtIn)
             type.id.clear();
@@ -388,7 +393,7 @@ void writePlugins(QSettings& s, const QList<PluginConfig>& plugins)
             s.remove(group); // sections of plugins the list no longer has
     }
     for (const PluginConfig& config : plugins) {
-        s.beginGroup(kPluginGroup + config.id);
+        s.beginGroup(QString(kPluginGroup) + config.id);
         s.setValue(u"Enabled"_s, config.enabled);
         if (!config.confirmed.isEmpty())
             s.setValue(u"Confirmed"_s, config.confirmed);
@@ -660,8 +665,9 @@ void Settings::load()
     if (sort != u"newest" && sort != u"oldest")
         sort = d.sort;
     startList = readOrDefault(s, u"Results/StartList"_s, d.startList).trimmed().toLower();
-    if (startList != u"modified" && startList != u"none")
+    if (startList != u"modified" && startList != u"searched" && startList != u"none")
         startList = d.startList;
+    searchClearSeconds = std::clamp(readOrDefault(s, u"Results/SearchClearSeconds"_s, d.searchClearSeconds), 0, 24 * 60 * 60);
     clearOnOpen = readOrDefault(s, u"Launcher/ClearOnOpen"_s, d.clearOnOpen);
     numberKeys = readOrDefault(s, u"Results/NumberKeys"_s, d.numberKeys).trimmed().toLower();
     if (numberKeys != u"alt" && numberKeys != u"off")
@@ -672,6 +678,12 @@ void Settings::load()
     previewWith = readOrDefault(s, u"Results/PreviewWith"_s, d.previewWith).trimmed().toLower();
     if (previewWith != u"builtin")
         previewWith = d.previewWith;
+    previewOfficeEngine = readOrDefault(s, u"Results/PreviewOfficeEngine"_s, d.previewOfficeEngine).trimmed().toLower();
+    if (previewOfficeEngine != u"libreoffice" && previewOfficeEngine != u"office")
+        previewOfficeEngine = d.previewOfficeEngine;
+    previewEmbedded = readOrDefault(s, u"Results/PreviewEmbedded"_s, d.previewEmbedded);
+    previewPaneHeight = readOrDefault(s, u"Results/PreviewPaneHeight"_s, d.previewPaneHeight);
+    previewPaneWidth = readOrDefault(s, u"Results/PreviewPaneWidth"_s, d.previewPaneWidth);
 
     theme = readOrDefault(s, u"Appearance/Theme"_s, d.theme).trimmed().toLower();
     if (theme != u"light" && theme != u"dark")
@@ -691,6 +703,8 @@ void Settings::load()
     corners = readOrDefault(s, u"Appearance/Corners"_s, d.corners).trimmed().toLower();
     if (corners != u"round" && corners != u"square")
         corners = d.corners;
+    backgroundImage = readOrDefault(s, u"Appearance/BackgroundImage"_s, d.backgroundImage).trimmed();
+    backgroundOpacity = std::clamp(int(readOrDefault(s, u"Appearance/BackgroundOpacity"_s, d.backgroundOpacity)), 0, 100);
     if (transparency == u"false" || transparency == u"true") {
         transparency = transparency == u"false" ? u"off"_s : d.transparency;
         s.setValue(u"Appearance/Transparency"_s, transparency);
@@ -698,11 +712,17 @@ void Settings::load()
         transparency = d.transparency;
     }
 
-    autoUpdate = readOrDefault(s, u"Update/Automatic"_s, d.autoUpdate);
     backupFolder = readOrDefault(s, u"Backup/Folder"_s, d.backupFolder);
 
     excludedPaths = readOrDefault(s, u"Index/ExcludedPaths"_s, d.excludedPaths);
     excludedNames = readOrDefault(s, u"Index/ExcludedNames"_s, d.excludedNames);
+    excludedExtensions = readOrDefault(s, u"Index/ExcludedExtensions"_s, d.excludedExtensions);
+    for (QString& e : excludedExtensions) {
+        e = e.trimmed().toLower();
+        while (e.startsWith(u'.'))
+            e.remove(0, 1);
+    }
+    excludedExtensions.removeAll(QString());
     includeRemovableDrives = readOrDefault(s, u"Index/IncludeRemovableDrives"_s, d.includeRemovableDrives);
     rescanOnStartup = readOrDefault(s, u"Index/RescanOnStartup"_s, d.rescanOnStartup);
     indexAccess = readOrDefault(s, u"Index/Access"_s, d.indexAccess).trimmed().toLower();
@@ -821,20 +841,27 @@ void Settings::save() const
     s.setValue(u"Results/Thumbnails"_s, thumbnails);
     s.setValue(u"Results/Sort"_s, sort);
     s.setValue(u"Results/StartList"_s, startList);
+    s.setValue(u"Results/SearchClearSeconds"_s, searchClearSeconds);
     s.setValue(u"Launcher/ClearOnOpen"_s, clearOnOpen);
     s.setValue(u"Results/NumberKeys"_s, numberKeys);
     s.setValue(u"Results/NumberHints"_s, numberHints);
     s.setValue(u"Results/PreviewWith"_s, previewWith);
+    s.setValue(u"Results/PreviewOfficeEngine"_s, previewOfficeEngine);
+    s.setValue(u"Results/PreviewEmbedded"_s, previewEmbedded);
+    s.setValue(u"Results/PreviewPaneHeight"_s, previewPaneHeight);
+    s.setValue(u"Results/PreviewPaneWidth"_s, previewPaneWidth);
     s.setValue(u"Appearance/Theme"_s, theme);
     s.setValue(u"Appearance/Language"_s, language);
     s.setValue(u"Appearance/Transparency"_s, transparency);
     s.setValue(u"Appearance/TaskbarIcon"_s, taskbarIcon);
     s.setValue(u"Appearance/UiSize"_s, uiSize);
     s.setValue(u"Appearance/Corners"_s, corners);
-    s.setValue(u"Update/Automatic"_s, autoUpdate);
+    s.setValue(u"Appearance/BackgroundImage"_s, backgroundImage);
+    s.setValue(u"Appearance/BackgroundOpacity"_s, backgroundOpacity);
     s.setValue(u"Backup/Folder"_s, backupFolder);
     s.setValue(u"Index/ExcludedPaths"_s, excludedPaths);
     s.setValue(u"Index/ExcludedNames"_s, excludedNames);
+    s.setValue(u"Index/ExcludedExtensions"_s, excludedExtensions);
     s.setValue(u"Index/IncludeRemovableDrives"_s, includeRemovableDrives);
     s.setValue(u"Index/RescanOnStartup"_s, rescanOnStartup);
     s.setValue(u"Index/Access"_s, indexAccess);
@@ -907,6 +934,10 @@ CrawlRules Settings::crawlRules() const
     for (const QString& n : excludedNames) {
         if (!n.trimmed().isEmpty())
             rules.excludedNames.push_back(normalizeName(n));
+    }
+    for (const QString& e : excludedExtensions) {
+        if (!e.trimmed().isEmpty())
+            rules.excludedExtensions.push_back(e.trimmed().toLower().toStdWString()); // no dot (read stripped one)
     }
     for (const QString& p : kLowPriorityPaths) {
         const std::wstring path = normalizePath(p);

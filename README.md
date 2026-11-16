@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LingCore/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
+  <a href="https://github.com/pzhren-ux/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/x64-64--bit-blue" alt="x64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
@@ -18,7 +18,11 @@
 </p>
 
 <p align="center">
-  <a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#screenshots">截图 Screenshots</a>
+  <a href="#中文">中文</a> · <a href="#english">English</a> · <a href="#screenshots">截图 Screenshots</a> · <a href="#modifications">与原版的差异</a>
+</p>
+
+<p align="center">
+  <sub>本仓库是 <a href="https://github.com/LingCore/WinShun">Win顺</a> 的个人修改版，改了什么见 <a href="#modifications">与原版的差异</a>。<br>This repo is a personal fork of <a href="https://github.com/LingCore/WinShun">WinShun</a>; what changed is under <a href="#modifications">Changes from the original</a>.</sub>
 </p>
 
 <p align="center">
@@ -61,6 +65,48 @@
   <img src="docs/images/appearance.jpg" width="49%" alt="外观：主题、透明效果、圆角或直角、界面大小、单色任务栏图标 / appearance: theme, transparency, rounded or square corners, UI size, monochrome taskbar icon">
   <img src="docs/images/dark.jpg" width="49%" alt="深色模式，Win11 云母效果 / dark theme with Windows 11 Mica">
 </p>
+
+---
+
+<a id="modifications"></a>
+
+## 与原版的差异 · Changes from the original
+
+本仓库基于 [LingCore/WinShun](https://github.com/LingCore/WinShun) v0.10.0 修改而来，完整保留了上游的提交历史。在此之上按自己的使用习惯做了以下改动（v0.10.1），修改部分同样以 MIT 许可发布：
+
+This repository is modified from [LingCore/WinShun](https://github.com/LingCore/WinShun) v0.10.0, keeping the upstream commit history intact. The changes below (v0.10.1) follow my own habits and stay under the same MIT license:
+
+### 🖼️ 文件预览重做 · Preview redone
+
+- **预览嵌在启动器右侧**（默认）：`Alt+P` 在主窗口右侧分栏里预览，不再弹独立窗口；分栏宽度和窗口高度可以拖，拖完记住。
+  **Embedded preview** (default): `Alt+P` previews in a pane inside the launcher's own window instead of a separate one; the pane's width and the window's height are yours to drag and are remembered.
+- **PDF 按页渲染**：用 Windows 自带的 PDF 接口（`Windows.Data.Pdf`）逐页懒渲染，只画看得见的页，带 LRU 缓存，几百页的 PDF 也不卡；右下角显示“第几页 / 共几页”。原版把整份 PDF 拼成一张长图，页数一多就明显变慢。
+  **Page-wise PDF**: rendered page by page with Windows' own PDF API (`Windows.Data.Pdf`), only the pages in view, with an LRU cache; a few hundred pages stay smooth, where the original stitched the whole PDF into one long image.
+- **Office 文档预览双引擎**：docx / xlsx / pptx（含老格式 doc / xls / ppt）先转成 PDF 再按页预览，转换引擎三选一：**自动**（有 LibreOffice 用它）、**LibreOffice**（快、后台无头、不打扰开着的 Office）、**本机 Office**（COM 自动化，版式和分页与 Word 完全一致，代价是每个没转过的新文件首次要等十几秒）。没装 LibreOffice 时，设置里有一键安装按钮。转不出版式时注明“文字版”，回退纯文本。
+  **Two engines for Office documents**: docx / xlsx / pptx (and the old .doc / .xls / .ppt) are converted to PDF first; the engine is a choice of **Automatic** (LibreOffice when present), **LibreOffice** (fast, headless, leaves your Office alone) or **the Office on this machine** (COM; layout and pagination exactly as Word says, at the cost of a first-run wait per file). A one-click LibreOffice install sits in the settings; a document that can only show as text says 文字版 (text only).
+- **没有预览就讲文件的事**：预览不出来的行显示大图标、类型、大小、修改/创建时间和所在位置，不再是只有一句“没有可预览的文件”。
+  **Facts where nothing previews**: a row that cannot be previewed shows its icon, kind, size, dates and location instead of a bare “nothing to preview”.
+
+### 🔍 搜索 · Search
+
+- **只按文件名匹配**：文件结果只看文件名，不再因为所在文件夹的名字带这个词，就把文件夹里的东西全列出来。
+  **Name only**: file results match the name alone; a folder's name no longer drags everything inside it in.
+- **排除更彻底**：设置 › 搜索范围的“不搜索的文件夹”全局生效（建索引时不进去，历史、手输路径、整盘遍历和内容搜索都照此过滤）；新增**全局排除扩展名**（如 `tmp`）；每种文件类型还能各设各的排除路径（如“代码”排除 `node_modules`）。
+  **Deeper exclusions**: the folders under Settings › Search scope hold globally (the indexer never enters them; history, typed paths, drive walks and content search all honour them); globally excluded extensions (`tmp`) are new; every kind of file can exclude its own folders (keep Code out of `node_modules`).
+- **最近搜索**：空框时可以列出最近搜过的词，窗口关掉一段时间后自动清除（时间可设）。
+  **Recent queries**: listed while the box is empty, and cleared by themselves a while after the window hides (the delay is yours).
+
+### 🪟 窗口与外观 · Window and looks
+
+- **从任务栏打开时**，窗口记住上次拖出的高度并左右居中，不再随任务栏按钮的位置偏向一边。
+  Opened from the taskbar, the window keeps the height it was dragged to and sits centred, not pulled aside by the taskbar's button.
+- **自定义背景**：设置 › 外观可以选一张背景图垫在搜索框和结果下面，透明度可调。
+  **Custom background**: a picture of your own under the search box and the rows, opacity adjustable (Settings › Appearance).
+
+### 🧹 精简 · Slimmed down
+
+- 移除了检查更新（托盘提醒和更新对话框）和结果行的“在终端中打开”。
+  The update check (tray notice and update dialog) and “Open in terminal” are gone.
 
 ---
 
@@ -206,7 +252,7 @@
 
 ### 下载安装
 
-1. 到 [Releases 页面](https://github.com/LingCore/WinShun/releases/latest) 下载 `WinShun-版本号-x64-setup.exe`，双击安装。Windows 提示“已保护你的电脑”时，点 **更多信息 → 仍要运行**（还没有代码签名证书）。
+1. 到 [Releases 页面](https://github.com/pzhren-ux/WinShun/releases/latest) 下载 `WinShun-版本号-x64-setup.exe`，双击安装。Windows 提示“已保护你的电脑”时，点 **更多信息 → 仍要运行**（还没有代码签名证书）。
 2. 装完托盘里出现 Win顺 的图标，索引几秒就建好。连按两下 Ctrl 开始搜索。
 3. 升级时运行新的安装程序，设置和索引都保留。卸载在 Windows 的“设置 → 应用”里。
 
@@ -246,7 +292,7 @@ Listary、PowerToys 的“查找鼠标”默认也用双击 Ctrl，关掉其中�
 
 ### 反馈
 
-遇到问题或有建议，欢迎在 [Issues](https://github.com/LingCore/WinShun/issues) 里提出。
+遇到问题或有建议，欢迎在 [Issues](https://github.com/pzhren-ux/WinShun/issues) 里提出。
 
 ### 从源码编译
 
@@ -358,7 +404,7 @@ It reads the NTFS master file table (MFT) directly, indexing three million files
 
 ### Download and install
 
-1. Download `WinShun-<version>-x64-setup.exe` from the [Releases page](https://github.com/LingCore/WinShun/releases/latest) and run it. If Windows says “Windows protected your PC”, click **More info → Run anyway**: the app is not code-signed yet.
+1. Download `WinShun-<version>-x64-setup.exe` from the [Releases page](https://github.com/pzhren-ux/WinShun/releases/latest) and run it. If Windows says “Windows protected your PC”, click **More info → Run anyway**: the app is not code-signed yet.
 2. When the WinShun icon appears in the notification area, it is running; the first index takes a few seconds. Press Ctrl twice and type.
 3. To upgrade, run a newer installer: your settings and index are kept. Uninstall from Windows Settings → Apps.
 
@@ -398,7 +444,7 @@ Free and MIT-licensed. It goes online only to check GitHub for new versions (you
 
 ### Feedback
 
-Bug reports and suggestions are welcome in [Issues](https://github.com/LingCore/WinShun/issues).
+Bug reports and suggestions are welcome in [Issues](https://github.com/pzhren-ux/WinShun/issues).
 
 ### Build from source
 

@@ -1801,10 +1801,13 @@ private slots:
         }
         // One term: in the name, as before.
         QCOMPARE(NameMatcher(ws::parseQuery(u"src"_s)).matchPath(u"F:\\src\\app.txt"_s, false), -1);
-        // With an extension: the word may be the folder's.
+        // With an extension too: the word is still the name's (the file
+        // search keeps to names; the type chip does not make a folder's name
+        // pull in every file of the type in it).
         const NameMatcher pdfs(ws::parseQuery(u"合同 ext:pdf"_s));
-        QVERIFY(pdfs.matchPath(u"D:\\合同\\扫描1.pdf"_s, false) >= 0);
-        QCOMPARE(pdfs.matchPath(u"D:\\合同\\扫描1.jpg"_s, false), -1);
+        QCOMPARE(pdfs.matchPath(u"D:\\合同\\扫描1.pdf"_s, false), -1); // in the folder, not the file's
+        QVERIFY(pdfs.matchPath(u"D:\\账单\\合同1.pdf"_s, false) >= 0);
+        QCOMPARE(pdfs.matchPath(u"D:\\账单\\合同1.jpg"_s, false), -1);
         // Wildcards and exclusions stay with the name.
         QCOMPARE(NameMatcher(ws::parseQuery(u"*.txt docs"_s)).matchPath(u"C:\\a.txt\\docs.md"_s, false), -1);
         QVERIFY(NameMatcher(ws::parseQuery(u"notes !draft"_s)).matchPath(u"C:\\draft\\notes.txt"_s, false) >= 0);

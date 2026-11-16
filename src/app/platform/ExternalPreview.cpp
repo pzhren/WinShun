@@ -66,7 +66,7 @@ bool sendQuickLook(QStringView message, const QString& path)
     }
     if (handle == INVALID_HANDLE_VALUE)
         return false;
-    const QByteArray line = (u"QuickLook.App.PipeMessages."_s + message + u'|' + path + u"|\r\n"_s).toUtf8();
+    const QByteArray line = (u"QuickLook.App.PipeMessages."_s + QString(message) + u'|' + path + u"|\r\n"_s).toUtf8();
     DWORD written = 0;
     const bool ok = ::WriteFile(handle, line.constData(), static_cast<DWORD>(line.size()), &written, nullptr)
         && written == static_cast<DWORD>(line.size());

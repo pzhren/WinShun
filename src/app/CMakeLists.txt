@@ -128,6 +128,8 @@ set(qml_files
     qml/DialogBarRow.qml
     qml/FolderMenuWindow.qml
     qml/PreviewWindow.qml
+    qml/EmbeddedPreview.qml
+    qml/PdfPages.qml
     qml/HoverTip.qml
     qml/ShortcutTip.qml
     qml/NameTip.qml
@@ -142,8 +144,8 @@ set(qml_files
     qml/SettingRow.qml
     qml/PageTabs.qml
     qml/ThemeCard.qml
-    qml/UpdateDialog.qml
     qml/ToggleSwitch.qml
+    qml/PercentSlider.qml
     qml/FlatButton.qml
     qml/InputBox.qml
     qml/WebShortcutForm.qml
@@ -224,6 +226,7 @@ qt_add_qml_module(WinShun
         GleaningScene.cpp GleaningScene.h
         IconBadge.cpp IconBadge.h
         Launcher.cpp Launcher.h
+        OfficeConvert.cpp OfficeConvert.h
         Placement.cpp Placement.h
         PluginSettings.cpp PluginSettings.h
         ResultModel.cpp ResultModel.h
@@ -233,7 +236,6 @@ qt_add_qml_module(WinShun
         SoundClip.cpp SoundClip.h
         SystemTheme.cpp SystemTheme.h
         UiSize.h
-        Updater.cpp Updater.h
         Backup.cpp Backup.h BackupFiles.cpp BackupFiles.h
         WindowFrame.cpp WindowFrame.h
 )

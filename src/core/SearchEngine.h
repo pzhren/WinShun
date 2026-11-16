@@ -116,6 +116,18 @@ public:
         // its folders as contentFolders.
         EntryFilter filter;
         QStringList folders;
+        // Full paths (native separators, no trailing one but a drive root's)
+        // nothing is ever listed under: the 搜索范围 exclusions, and the
+        // chosen file type's own (文件类型 per-type, on top of the global
+        // ones). The index leaves the global ones out already; this catches
+        // what comes from elsewhere (the history, a typed folder's listing,
+        // a walked drive, file contents) and the type's own.
+        QStringList excludedFolders;
+        // File extensions ("tmp", no dot, any case) whose files are never
+        // listed: the 搜索范围 exclusions. The index leaves them out already;
+        // this catches what comes from elsewhere (the history, a walked
+        // drive, file contents) and keeps the change live without a re-crawl.
+        QStringList excludedExtensions;
         // The panel's column order; Rank: rankBy.
         SortOrder order;
         // The panel: with nothing typed, every file and folder the filters

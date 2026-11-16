@@ -19,6 +19,8 @@ namespace ws {
 struct CrawlRules {
     std::vector<std::wstring> excludedPaths;
     std::vector<std::wstring> excludedNames;
+    // File extensions ("tmp", no dot) whose files are never indexed.
+    std::vector<std::wstring> excludedExtensions;
     std::vector<std::wstring> lowPriorityPaths;
     std::vector<std::wstring> lowPriorityNames;
 

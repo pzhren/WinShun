@@ -2,6 +2,7 @@
 #include "Diagnostics.h"
 #include "Backup.h"
 #include "Migration.h"
+#include "OfficeConvert.h"
 #include "Preview.h"
 #include "Settings.h"
 #include "SystemCatalog.h"
@@ -171,6 +172,15 @@ int main(int argc, char* argv[])
     // installer (elevated); nothing else is started (no Qt, no window).
     if (wideArgs.contains(u"--stage-tap"_s))
         return ws::taskbar::stageTap();
+    // --office-to-pdf <document> <pdf>: Office's own converter, in a copy of
+    // this program (OfficeConvert), so one that hangs can be ended from the
+    // outside. Nothing of Qt is started for it either.
+    if (wideArgs.contains(u"--office-to-pdf"_s))
+        return ws::office::convertCommandLine(wideArgs);
+    // --install-libreoffice: what the settings button does, for a test (or a
+    // script): 0 when an installer or its download page was started.
+    if (wideArgs.contains(u"--install-libreoffice"_s))
+        return ws::office::startLibreOfficeInstall() ? 0 : 1;
     // A portable copy: everything in the "data" folder beside the program.
     bool portable = false;
     if (ws::Settings::profile().isEmpty()) {

@@ -658,8 +658,10 @@ IndexService::RuleChange IndexService::applyRuleChanges(
 {
     const CrawlRules& after = crawler.rules();
     // A folder name no longer excluded could be anywhere, and other ranking
-    // rules change flags everywhere: read every volume again.
+    // rules change flags everywhere: read every volume again. An extension
+    // rule touched, either way: which files it frees or excludes is anywhere.
     if (before.lowPriorityPaths != after.lowPriorityPaths || before.lowPriorityNames != after.lowPriorityNames
+        || before.excludedExtensions != after.excludedExtensions
         || !added(after.excludedNames, before.excludedNames).empty()) {
         std::lock_guard lock(m_journalMutex);
         m_rulesBefore.reset();

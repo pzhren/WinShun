@@ -885,6 +885,38 @@ void promoteFavorites(SearchResults& results, qint64& total, const SearchEngine:
         results.resize(request.limit);
 }
 
+// Whether a row lies in one of the folders the request excludes (the 搜索范围
+// exclusions, and the chosen file type's own): the path itself, or under it.
+bool excludedFolder(const QString& path, const QStringList& folders)
+{
+    for (const QString& folder : folders) {
+        if (path.compare(folder, Qt::CaseInsensitive) == 0)
+            return true;
+        if (folder.endsWith(u'\\') ? path.startsWith(folder, Qt::CaseInsensitive)
+                                   : path.startsWith(folder + u'\\', Qt::CaseInsensitive))
+            return true;
+    }
+    return false;
+}
+
+// Whether a row is a file of an extension the request excludes ("tmp", no
+// dot, any case). Folders never match.
+bool excludedExtension(const QString& path, bool isDir, const QStringList& extensions)
+{
+    if (extensions.isEmpty() || isDir)
+        return false;
+    const qsizetype at = path.lastIndexOf(u'.');
+    const qsizetype sep = path.lastIndexOf(u'\\');
+    if (at < 0 || at < sep || at + 1 == path.size())
+        return false; // no suffix, or the dot is in a folder's name
+    const QString suffix = path.mid(at + 1);
+    for (const QString& e : extensions) {
+        if (suffix.compare(e, Qt::CaseInsensitive) == 0)
+            return true;
+    }
+    return false;
+}
+
 } // namespace
 
 bool rankedBefore(const SearchResult& a, const SearchResult& b, RankBy by) noexcept
@@ -1358,6 +1390,16 @@ void SearchEngine::runNameSearch(const Job& job)
 
     if (isStale(job.id))
         return;
+    // Nothing under a folder the request excludes (see Request::excludedFolders),
+    // and no file of an extension it excludes.
+    if (!request.excludedFolders.isEmpty() || !request.excludedExtensions.isEmpty()) {
+        const qsizetype before = results.size();
+        results.removeIf([&](const SearchResult& r) {
+            return excludedFolder(r.path, request.excludedFolders)
+                || excludedExtension(r.path, r.isDir, request.excludedExtensions);
+        });
+        total -= static_cast<qint64>(before - results.size());
+    }
     emit resultsReady(job.id, results, total, timer.nsecsElapsed() / 1000);
     // Something typed, and the list is all there is: whether a drive the
     // index leaves out could hold what was not found (the launcher offers to
@@ -1478,6 +1520,10 @@ void SearchEngine::runDriveWalk(const Job& job)
             if (foldersOnly && !isDir)
                 continue;
             const QString qpath = QString::fromStdWString(path);
+            if (excludedFolder(qpath, request.excludedFolders))
+                continue;
+            if (excludedExtension(qpath, isDir, request.excludedExtensions))
+                continue;
             int score = matcher.matchPath(qpath, isDir);
             if (score < 0)
                 continue;
@@ -1765,6 +1811,11 @@ void SearchEngine::runContentSearch(const Job& job)
         // In the list's order (the launcher places them among the rows it has).
         std::ranges::stable_sort(
             out, [&](const SearchResult& a, const SearchResult& b) { return rankedBefore(a, b, request.rankBy); });
+        if (!request.excludedFolders.isEmpty() || !request.excludedExtensions.isEmpty())
+            out.removeIf([&](const SearchResult& r) {
+                return excludedFolder(r.path, request.excludedFolders)
+                    || excludedExtension(r.path, r.isDir, request.excludedExtensions);
+            });
         if (!out.isEmpty())
             emit contentResults(job.id, out);
         if (finished && !oneOff && scanned.load() == total) {

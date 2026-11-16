@@ -74,7 +74,15 @@ QImage render(QByteArrayView bytes, int side, Problem* problem)
 
     QSvgRenderer renderer;
     // Not AssumeTrustedSource: QtSvg's own limits for what it does not know stay on.
-    renderer.setOptions(QtSvg::DisableAnimations);
+    // Qt 6.8's QtSvg has no DisableAnimations yet (a QSvgRenderer renders one frame
+    // and does not run an animation by itself); Qt 6.9 added the option.
+    renderer.setOptions(
+#if QT_VERSION >= QT_VERSION_CHECK(6, 9, 0)
+        QtSvg::DisableAnimations
+#else
+        QtSvg::NoOption
+#endif
+    );
     if (!renderer.load(withoutDoctype(text).toUtf8()) || !renderer.isValid())
         return fail(Problem::NotSvg);
     QRectF box = renderer.viewBoxF();

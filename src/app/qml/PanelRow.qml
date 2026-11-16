@@ -51,6 +51,7 @@ Item {
     readonly property var results: ListView.view ? ListView.view.model : null
 
     signal clicked(int index, int modifiers)
+    signal currentRequested(int index)
     signal menuRequested(int index, point globalPos, int modifiers)
     signal dragRequested(int index)
 
@@ -225,7 +226,16 @@ Item {
                 return
             if (mouse.button === Qt.RightButton)
                 row.menuRequested(row.index, area.mapToGlobal(mouse.x, mouse.y), mouse.modifiers)
+            else if (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+                row.clicked(row.index, mouse.modifiers) // Ctrl toggles, Shift selects: on one click
             else
+                row.currentRequested(row.index) // a plain click only marks the row; a double one opens
+        }
+        // A plain double click opens the row (a single click only marks it current).
+        onDoubleClicked: (mouse) => {
+            if (draggedOut)
+                return
+            if (mouse.button === Qt.LeftButton && !(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)))
                 row.clicked(row.index, mouse.modifiers)
         }
     }

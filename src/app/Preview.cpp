@@ -1,14 +1,16 @@
 #include "Preview.h"
+#include "OfficeConvert.h"
 
 #include "Backup.h"
 #include "FavoritesSettings.h"
 #include "FileIconProvider.h"
+#include "FilePreview.h"
 #include "PluginSettings.h"
 #include "ResultModel.h"
 #include "Settings.h"
 #include "SettingsEditor.h"
 #include "SystemTheme.h"
-#include "Updater.h"
+#include "ThumbnailProvider.h"
 #include "WindowFrame.h"
 #include "platform/SiteIcons.h"
 
@@ -17,6 +19,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QFontInfo>
 #include <QFontMetricsF>
 #include <QGuiApplication>
@@ -28,6 +31,7 @@
 #include <QQmlComponent>
 #include <QQmlContext>
 #include <QQmlEngine>
+#include <QStandardPaths>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QStyleHints>
@@ -49,6 +53,7 @@ namespace {
 constexpr auto kFlag = u"--preview-plugins";
 constexpr auto kSettingsFlag = u"--preview-settings";
 constexpr auto kResultsFlag = u"--preview-results";
+constexpr auto kFileFlag = u"--preview-file";
 
 int g_warnings = 0;
 QtMessageHandler g_previous = nullptr;
@@ -479,6 +484,16 @@ int runSettings(const QStringList& args)
     settings.doubleCtrlExcludedApps = {u"TheFinals.exe"_s};
     settings.clipboardHotkey = u"Win+Alt+V"_s;
     settings.mcpExcludedPaths = {u"%USERPROFILE%\\Documents\\私人"_s};
+    // 自定义背景 with a picture, so the row shows its buttons and its slider.
+    const QString previewBg = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+            + u"/winshun-preview-background.png"_s;
+    if (!QFileInfo::exists(previewBg)) {
+        QImage tile(96, 96, QImage::Format_RGB32);
+        tile.fill(QColor(96, 150, 220));
+        tile.save(previewBg, "PNG");
+    }
+    settings.backgroundImage = previewBg;
+    settings.backgroundOpacity = 40;
     // The real view-model and its real neighbours, as App::showSettings makes
     // them; the renderer "running" is the one set, so that no restart is asked for.
     auto* editor = new SettingsEditor(settings, Settings::resolveRenderer(settings.renderer), &engine);
@@ -486,7 +501,6 @@ int runSettings(const QStringList& args)
         SystemTheme::setRoundedCorners(editor->corners() == u"round");
     });
     auto* frame = new WindowFrame(true, editor);
-    auto* updater = new Updater(editor); // never setAutomatic() or check(): no network
     editor->plugins()->setLocale(u"zh"_s);
     editor->plugins()->loadPreview(); // a plugin::Host would start WinShunPluginHost.exe: made-up cards instead
     editor->setMcpStatus(u"已连接：Claude Desktop（12 次调用）"_s);
@@ -523,7 +537,6 @@ int runSettings(const QStringList& args)
     QObject* object = component.createWithInitialProperties({
         {u"editor"_s, QVariant::fromValue(editor)},
         {u"frame"_s, QVariant::fromValue(frame)},
-        {u"updater"_s, QVariant::fromValue(updater)},
         {u"backup"_s, QVariant::fromValue(&backup)},
     });
     auto* window = qobject_cast<QQuickWindow*>(object);
@@ -611,7 +624,7 @@ int runSettings(const QStringList& args)
                 pump(3600); // the avatar's greeting (AuthorClock) has played out
             }
             pump(400); // the sliding marker, the asynchronous icons
-            const QString file = out.filePath(u"p%1-t%2.png"_s.arg(page, 2, 10, u'0').arg(tab));
+            const QString file = out.filePath(u"p%1-t%2.png"_s.arg(page, 2, 10, QChar(u'0')).arg(tab));
             say(u"page %1 tab %2 (%3): window %4x%5 asked %6, current %7/%8, content %9"_s.arg(page).arg(tab).arg(title)
                     .arg(window->width()).arg(window->height()).arg(height).arg(window->property("currentPage").toInt())
                     .arg(window->property("currentTab").toInt()).arg(flick->property("contentHeight").toReal()));
@@ -815,14 +828,98 @@ int runResults(const QStringList& args)
     grab(u"off"_s);
     key(QEvent::KeyRelease);
     say(u"renderer D3D11, DPR %1; Qt events only, not a global double-Ctrl gesture"_s.arg(window->devicePixelRatio()));
-    return finish(window, saved);
+} // namespace
+
+// ---- --preview-file ---------------------------------------------------------------------
+
+// The preview pane with a real file: FilePreview for real (its worker thread,
+// the image providers, a document opened from the disk), in the pane
+// EmbeddedPreview draws — no window management, no keyboard, no hotkeys.
+int runFile(const QStringList& args)
+{
+    const QString path = valueAfter(args, kFileFlag);
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
+        say(u"preview-file: no such file: %1"_s.arg(path));
+        return 2;
+    }
+    const QDir out(valueAfter(args, u"--out"_s, u"."_s));
+    QDir().mkpath(out.path());
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Direct3D11);
+    QQmlApplicationEngine engine;
+    engine.addImageProvider(u"fileicon"_s, new FileIconProvider);
+    engine.addImageProvider(u"thumbnail"_s, new ThumbnailProvider);
+    FilePreview previewFile;
+    // Which program turns a document into the PDF: --engine libreoffice|office,
+    // else whichever there is (the setting is not read here, so a test of both
+    // needs nothing but the switch).
+    previewFile.setOfficeEngine(office::engineFromName(valueAfter(args, u"--engine"_s, u"auto"_s)));
+    engine.addImageProvider(u"preview"_s, previewFile.imageProvider()); // the pages drawn so far
+    previewFile.setEmbedded(true);
+    engine.rootContext()->setContextProperty(u"previewFile"_s, &previewFile);
+    const QString qml = uR"(
+        import QtQuick
+        import WinShun
+        Window {
+            width: 560; height: 760
+            color: Theme.background
+            EmbeddedPreview {
+                anchors.fill: parent
+                preview: previewFile
+            }
+        }
+    )"_s;
+    QQmlComponent component(&engine);
+    component.setData(qml.toUtf8(), QUrl(u"qrc:/file-preview.qml"_s));
+    auto* window = qobject_cast<QQuickWindow*>(component.create());
+    if (!window) {
+        say(component.errorString());
+        return 3;
+    }
+    QTimer watchdog;
+    armWatchdog(watchdog, 120);
+    showOffScreen(window);
+    settle(window);
+    previewFile.show({path, QFileInfo(path).fileName(), QFileInfo(path).isDir()});
+    // The file read; then the pane asks for its pages, drawn one after
+    // another on the worker thread. An Office document shows a first look of
+    // it (its thumbnail, its words) while the converter runs: waited out as
+    // well, so the grab below is of the pages, not of that stand-in.
+    QElapsedTimer waited;
+    waited.start();
+    while ((previewFile.kind() == FilePreview::Loading || previewFile.busy()) && waited.elapsed() < 60000)
+        pump(50);
+    pump(4000);
+    say(u"pages %1, kind %2"_s.arg(previewFile.pageCount()).arg(previewFile.kind()));
+    bool saved = saveGrab(window, out.filePath(u"file-top.png"_s));
+    // Scrolled a few pages down: the pages there are asked for and drawn too.
+    QQuickItem* list = nullptr;
+    const auto items = window->findChildren<QQuickItem*>();
+    for (QQuickItem* item : items)
+        if (item->objectName() == u"pdfPagesList"_s)
+            list = item;
+    if (previewFile.pageCount() > 0) {
+        if (list) {
+            const qreal page = list->property("contentHeight").toReal() / previewFile.pageCount();
+            const qreal most = list->property("contentHeight").toReal() - list->height();
+            list->setProperty("contentY", std::min(1.2 * page, std::max(0.0, most)));
+            pump(4000);
+            saved = saveGrab(window, out.filePath(u"file-down.png"_s)) && saved;
+        } else {
+            say(u"WARNING: no page list found in the pane"_s);
+        }
+    }
+    // The grabs are written; the threads the preview spun up (the worker, the
+    // image readers) are not waited for — waiting for them can hang at exit,
+    // and their stopping is not this run's business.
+    std::_Exit(finish(window, saved));
 }
 
 } // namespace
 
 bool wanted(const QStringList& args)
 {
-    return args.contains(kFlag) || args.contains(kSettingsFlag) || args.contains(kResultsFlag);
+    return args.contains(kFlag) || args.contains(kSettingsFlag) || args.contains(kResultsFlag)
+        || args.contains(kFileFlag);
 }
 
 void note(const QString& line)
@@ -862,15 +959,18 @@ int run(const QStringList& args)
 {
     const bool settingsMode = args.contains(kSettingsFlag);
     const bool resultsMode = args.contains(kResultsFlag);
-    if (valueAfter(args, resultsMode ? kResultsFlag : settingsMode ? kSettingsFlag : kFlag).isEmpty()) {
+    const bool fileMode = args.contains(kFileFlag);
+    if (valueAfter(args, fileMode ? kFileFlag
+            : resultsMode ? kResultsFlag : settingsMode ? kSettingsFlag : kFlag).isEmpty()) {
         std::fprintf(stderr, "usage: WinShun --preview-plugins <file.png> [--dark] [--scale 1.5] [--dialog] [--page ai]\n"
-                             "       WinShun --preview-settings <folder> [--dark] [--scale 1.5] [--tree]\n");
+                             "       WinShun --preview-settings <folder> [--dark] [--scale 1.5] [--tree]\n"
+                             "       WinShun --preview-file <path> --out <folder>\n");
         return 2;
     }
     g_previous = qInstallMessageHandler(countWarnings);
     QGuiApplication::styleHints()->setColorScheme(args.contains(u"--dark"_s) ? Qt::ColorScheme::Dark : Qt::ColorScheme::Light);
     SystemTheme::setBackdropAvailable(false); // plain colours, as a window without Mica
-    return resultsMode ? runResults(args) : settingsMode ? runSettings(args) : runPlugins(args);
+    return fileMode ? runFile(args) : resultsMode ? runResults(args) : settingsMode ? runSettings(args) : runPlugins(args);
 }
 
 } // namespace ws::preview

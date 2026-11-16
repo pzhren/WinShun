@@ -507,10 +507,10 @@ QString sizeText(std::uint64_t bytes)
         ++unit;
     }
     if (unit == 0)
-        return QString::number(bytes) + u" B";
+        return QString::number(bytes) + QStringLiteral(" B");
     // Three figures: 1.23 MB, 12.3 MB, 123 MB.
     const int decimals = value < 10 ? 2 : value < 100 ? 1 : 0;
-    return QString::number(value, 'f', decimals) + u' ' + kUnits[unit];
+    return QString::number(value, 'f', decimals) + QStringLiteral(" ") + QString::fromUtf16(kUnits[unit]);
 }
 
 ParsedQuery parseQuery(const QString& text)
@@ -734,7 +734,13 @@ int NameMatcher::score(std::string_view name, bool isDir, Han&& han, std::size_t
     std::size_t covered = 0;
     std::optional<pinyin::Span> pinyinMatch; // of a lone term, for the exact-name bonus
     std::uint64_t elsewhere = 0; // terms not in the name, to be found in its folders
-    bool inName = !m_extensions.empty(); // something is in the name (checked below)
+    // Something is in the name (checked below) — unless the query has no
+    // words at all (ext: alone, or nothing typed). A word must be in the
+    // name, extension filter or not: with a type chosen (文档), a word that
+    // only names a folder above must not pull in every file of the type in
+    // it — the file search keeps to names; the folder itself is what 文件夹
+    // finds.
+    bool inName = m_positive.empty();
 
     for (std::size_t i = 0; i < m_positive.size(); ++i) {
         const Positive& p = m_positive[i];
@@ -753,7 +759,12 @@ int NameMatcher::score(std::string_view name, bool isDir, Han&& han, std::size_t
                 // and lower still when it takes a less common reading (解 as xie).
                 auto span = p.pinyin.valid() && han() ? p.pinyin.findUtf8(name) : std::nullopt;
                 if (!span) {
-                    if (i < 64 && (m_folderTerms >> i & 1)) {
+                    // A term missing from the name may sit in a folder's name —
+                    // but only when several terms are typed (one of them in the
+                    // name, this in a folder it is in). A lone term keeps to the
+                    // name: 梁小丹 lists what is called so, not everything that
+                    // lies in a folder called 梁小丹.
+                    if (m_positive.size() > 1 && i < 64 && (m_folderTerms >> i & 1)) {
                         elsewhere |= std::uint64_t {1} << i;
                         continue;
                     }

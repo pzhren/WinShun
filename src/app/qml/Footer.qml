@@ -6,10 +6,9 @@ import WinShun
 // On the left, how the list is chosen (Ctrl+S goes to the next): with nothing
 // typed, what was opened last or the files written last; else best match
 // first or by when last written, newest or oldest first. Beside it a word
-// when there is something to say ("已复制路径"); keyboard hints on the
-// right (the three used most; the info button after them lists the rest),
-// and at the very right a button that clears the recent items (while there
-// are some to clear). The divider above shows work going on.
+// when there is something to say ("已复制路径"); at the very right a button
+// that clears the recent items (while there are some to clear), and an info
+// button with the other shortcuts. The divider above shows work going on.
 // Dragging it moves the window.
 Item {
     id: footer
@@ -120,8 +119,8 @@ Item {
         id: status
         anchors.left: order.visible ? order.right : parent.left
         anchors.leftMargin: order.visible ? 14 : 18
-        anchors.right: hints.left
-        anchors.rightMargin: 12
+        anchors.right: info.left
+        anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
         text: footer.launcher.statusText
         textFormat: Text.PlainText // may name a file
@@ -221,10 +220,10 @@ Item {
         anchors.leftMargin: 16
         anchors.verticalCenter: parent.verticalCenter
         glyph: footer.atStart ? "\uE81C" : "\uE8CB" // History, Sort
-        labels: footer.atStart ? [qsTr("最近打开"), qsTr("最近修改")]
+        labels: footer.atStart ? [qsTr("最近打开"), qsTr("最近修改"), qsTr("最近搜索")]
                                  : [qsTr("最匹配"), qsTr("最新"), qsTr("最早")]
         current: footer.atStart ? footer.launcher.startList : footer.launcher.sort
-        tip: footer.atStart ? qsTr("不输入时列出最近打开的，或最近修改的文件")
+        tip: footer.atStart ? qsTr("不输入时列出最近打开的、最近修改的文件，或搜过的词")
                               : qsTr("最匹配的在前，或按修改时间：最新的在前、最早的在前")
         onActivated: (index) => {
             if (footer.atStart)
@@ -233,44 +232,6 @@ Item {
                 footer.launcher.sort = index
         }
         Component.onCompleted: footer.frame.addControl(order) // buttons, not part of the drag area
-    }
-
-    Row {
-        id: hints
-        anchors.right: info.left
-        anchors.rightMargin: 8
-        anchors.verticalCenter: parent.verticalCenter
-        spacing: 14
-
-        // What the keys do on the row the keyboard is on (Launcher.keyHints:
-        // a plugin's row names its own actions, a row with no location has
-        // no Ctrl+Enter, Tab completes the row that offers it). Plain words,
-        // not "↵": a symbol missing from the UI font triggers system-wide
-        // font fallback, which costs tens of MB.
-        readonly property var keyHints: footer.launcher.keyHints
-
-        // Hints give way to the status from the left, Enter's first (everyone
-        // knows it), then Ctrl+Enter's; Tab's stays. Mostly there is none,
-        // and all show. Worked out from the full widths, not the laid-out
-        // ones, which depend on it.
-        readonly property real statusNeeds: Math.ceil(statusMetrics.advanceWidth)
-        readonly property real statusRoom: info.x - 8 - (order.visible ? 16 + order.width + 14 : 18) - 12
-        function roomWith(shown) { // the status's, with these hints shown
-            const widths = shown.map(h => h.fullWidth).filter(w => w > 0)
-            return statusRoom - widths.reduce((a, b) => a + b, 0) - hints.spacing * Math.max(0, widths.length - 1)
-        }
-        readonly property int given: statusNeeds <= roomWith([enterHint, secondHint, tabHint]) ? 0
-                                     : statusNeeds <= roomWith([secondHint, tabHint]) ? 1 : 2
-
-        TextMetrics {
-            id: statusMetrics
-            font.pixelSize: Theme.uiBody
-            text: footer.launcher.statusText
-        }
-
-        KeyHint { id: enterHint; visible: hints.given < 1 && label.length > 0; keys: "Enter"; label: hints.keyHints.enter ?? "" }
-        KeyHint { id: secondHint; visible: hints.given < 2 && label.length > 0; keys: hints.keyHints.secondKeys ?? ""; label: hints.keyHints.second ?? "" }
-        KeyHint { id: tabHint; visible: label.length > 0; keys: "Tab"; label: hints.keyHints.tab ?? "" }
     }
 
     // The launcher's other shortcuts, while the mouse rests on it.
@@ -287,7 +248,7 @@ Item {
             ["Ctrl+C", qsTr("复制文件")],
             ["Ctrl+Shift+C", qsTr("复制路径")],
             ["Alt+P", qsTr("预览文件；再按一次或 Esc 关闭")],
-            ["Ctrl+S", qsTr("切换排序；不输入时切换最近打开、最近修改")],
+            ["Ctrl+S", qsTr("切换排序；不输入时切换最近打开、最近修改、最近搜索")],
             ["Ctrl+E", qsTr("展开为搜索面板，或收回搜索框")],
             ["Ctrl+T", qsTr("钉住：点别处、打开文件后都不收起；再按一次取消")]
         ].concat(footer.launcher.numberKeys === "off" ? []

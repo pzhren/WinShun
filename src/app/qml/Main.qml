@@ -16,6 +16,10 @@ Window {
     required property Placement placement
     required property WindowFrame frame
 
+    // Height the user dragged the bottom edge to (0 = let the content size it).
+    property real userHeight: launcher.previewPaneHeight
+    property real dragStartHeight: 0
+
     // The clipboard dropped down under the search box (see above).
     readonly property bool clipboardBelow: clipboard.active && clipboard.field === searchBar.field
 
@@ -142,6 +146,29 @@ Window {
     // the search box stays where it is as results come and go.
     readonly property bool fullHeight: placement.atTaskbar && !clipboardBelow
     readonly property int listRows: fullHeight ? fitRows : shownRows
+    // Everything above and below the rows, as it is laid out: the bar, the
+    // strip of kinds of file, the divider and the footer — plus the empty
+    // state when it stands in for the rows. chromeHeight above is the budget
+    // the row count is worked out from; this is what the window is measured
+    // against, so the footer ends at its bottom edge.
+    readonly property real frameHeight: boxBar.implicitHeight + typeStrip.height
+                                        + (divider.visible ? divider.height : 0)
+                                        + (footer.visible ? footer.implicitHeight : 0)
+                                        + (emptyArea.visible ? emptyArea.height : 0)
+    // The rows' pane as the rows alone need it.
+    readonly property real rowsHeight: listRows * rowHeight + 8 + hintSpace
+                                       + (fullHeight ? -typeStrip.height : headingHeight)
+    // The user dragged the window taller for the preview: the room the rows'
+    // pane takes beyond its rows (the preview beside them grows with it).
+    // While the pane shows, and at the taskbar always: there the drag keeps
+    // its height between opens, so the window does not swing between the
+    // room's height with nothing typed and the dragged one with results (the
+    // room wins when the drag left it shorter: standing on the taskbar, it
+    // still fills down to it). Away from the taskbar with the pane closed,
+    // the window is as tall as its content, not as tall as the last drag
+    // left it.
+    readonly property bool paneRoom: fullHeight || (userHeight > 0 && previewPane.visible)
+    readonly property real extraHeight: paneRoom ? Math.max(0, userHeight - frameHeight - rowsHeight) : 0
     // There, with nothing typed: the apps opened most in a row over the
     // recent ones, as Windows' own search starts out.
     readonly property bool showHome: fullHeight && trimmedQuery.length === 0 && launcher.frequentApps.length > 0
@@ -176,8 +203,7 @@ Window {
         : contentMode ? qsTr("按 Tab 回到文件名搜索")
         : typeStrip.shown ? qsTr("按 Ctrl+Tab 换个类型，Tab 切换范围")
         : launcher.pluginKeyword.length > 0 ? qsTr("按 Esc 清空关键字后面的文字")
-        : launcher.searchesContent ? qsTr("文件名和 %1的内容里都没有").arg(launcher.contentFilesLabel)
-        : launcher.contentEnabled ? qsTr("按 Tab 切换范围，或搜索文件内容")
+        : launcher.contentEnabled ? qsTr("按 Tab 切换范围，到“内容”里搜文件里的文字")
         : qsTr("按 Tab 切换范围")
     component EmptyState: Column {
         property string title
@@ -313,7 +339,11 @@ Window {
     Binding {
         target: window
         property: "height"
-        value: layout.implicitHeight
+        // The preview pane was dragged taller: the window keeps that height
+        // while the pane shows. Else the window is as tall as the launcher's
+        // content, so the footer ends at its bottom edge (no blank strip
+        // under it from a drag the pane no longer fills).
+        value: window.paneRoom ? Math.max(window.userHeight, layout.implicitHeight) : layout.implicitHeight
         when: !window.panel
         restoreMode: Binding.RestoreNone
     }
@@ -321,7 +351,10 @@ Window {
     minimumHeight: panel ? 360 : 0
     // See-through to Mica, as the settings window (see there).
     color: Theme.backdrop && SystemTheme.materials && window.active ? "transparent" : Theme.background
-    flags: Qt.Tool | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+    // A window of its own on the taskbar, not a tool window: it keeps a button
+    // there while it is put away (minimized to it, App::hideLauncher), which a
+    // press brings back up. Tool windows have no button to press.
+    flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     title: qsTr("Win顺")
 
     Binding {
@@ -343,6 +376,11 @@ Window {
     }
 
     onClipboardBelowChanged: closeContextMenu()
+
+    // The launcher moved under the embedded preview: its handler's preview
+    // window (a window of its own) must follow, so re-place it.
+    onXChanged: if (previewPane && previewPane.visible) previewPane.reflow()
+    onYChanged: if (previewPane && previewPane.visible) previewPane.reflow()
 
     function moveSelection(delta) {
         if (hintIndex >= 0) { // on the hints after the last row: ↓ ↑ along them, ↑ from the first back to the last row
@@ -491,9 +529,10 @@ Window {
         return view.currentItem.mapToGlobal(56, viewRowHeight - 6)
     }
 
-    // Hidden: also free the menu window until it is needed again.
-    onVisibleChanged: {
-        if (!visible) {
+    // Put away (minimized to its button on the taskbar, or hidden): also free
+    // the menu window until it is needed again.
+    onVisibilityChanged: {
+        if (visibility === Window.Minimized || visibility === Window.Hidden) {
             closeContextMenu()
             menuLoader.active = false
             nameTip.dismiss()
@@ -773,6 +812,40 @@ Window {
             closeContextMenu()
     }
 
+    // 自定义背景 (设置 > 外观): the user's own picture under the search box and
+    // the rows, as much of it as its opacity lets through. Decoded once at the
+    // screen's size: tying sourceSize to the window's would re-decode the
+    // picture on every row that changes the window's height — the stutter and
+    // the white flash while typing.
+    Image {
+        id: backdropPicture
+
+        anchors.fill: parent
+        z: -2
+        visible: source.toString().length > 0 && status !== Image.Error
+        source: SystemTheme.backgroundImage
+        sourceSize: Qt.size(Screen.width, Screen.height)
+        fillMode: Image.PreserveAspectCrop
+        opacity: SystemTheme.backgroundOpacity
+        // Synchronously: the picture is on the first frame, so the window
+        // never flashes its plain colour while it waits (it decodes once,
+        // downscaled to the screen's size, which is quick).
+        asynchronous: false
+        smooth: true
+    }
+
+    // A veil of the window's own colour between the picture and the words:
+    // the picture keeps showing as a tint, and the rows and dates stay
+    // readable over a busy photograph. The stronger the picture (the
+    // slider), the thinner the veil.
+    Rectangle {
+        anchors.fill: parent
+        z: -1
+        visible: backdropPicture.visible
+        color: Theme.background
+        opacity: 0.85 - 0.5 * SystemTheme.backgroundOpacity
+    }
+
     // The panel over everything of the box (which keeps its layout, out of
     // sight, for when it is back): its own bar and list.
     Panel {
@@ -803,6 +876,10 @@ Window {
             view.currentIndex = index
             launcher.trigger(index, Launcher.Open) // a selected row opens the selection
         }
+    }
+    // A single click only marks the row current; a double click opens it (rowClicked).
+    function currentRowRequested(index) {
+        view.currentIndex = index
     }
     function rowMenuRequested(index, globalPos, modifiers) {
         if (!(modifiers & Qt.ShiftModifier) || !openSystemMenu(index))
@@ -839,6 +916,7 @@ Window {
         }
 
         Rectangle {
+            id: divider
             width: parent.width
             height: 1
             color: Theme.divider
@@ -848,8 +926,8 @@ Window {
         Item {
             id: listArea
             width: parent.width
-            height: window.listRows > 0 ? window.listRows * window.rowHeight + 8 + window.hintSpace
-                                          + (window.fullHeight ? -typeStrip.height : window.headingHeight) : 0
+            // The rows, and the room the preview pane was dragged out to.
+            height: window.listRows > 0 ? window.rowsHeight + window.extraHeight : 0
             visible: window.listRows > 0 && !window.clipboardBelow
 
             Text { // nothing is named as typed: these rows sound like it (window.headingHeight)
@@ -968,6 +1046,8 @@ Window {
                     verticalAlignment: Text.AlignVCenter
                     visible: view.count > 0
                     text: window.launcher.startList === Launcher.NoStartList ? qsTr("收藏")
+                          : window.launcher.startList === Launcher.RecentSearches
+                          ? (window.launcher.hasFavorites ? qsTr("收藏和最近搜索") : qsTr("最近搜索"))
                           : window.launcher.hasFavorites
                           ? (window.launcher.startList === Launcher.RecentlyModified ? qsTr("收藏和最近修改") : qsTr("收藏和最近"))
                           : (window.launcher.startList === Launcher.RecentlyModified ? qsTr("最近修改") : qsTr("最近"))
@@ -976,9 +1056,77 @@ Window {
                 }
             }
 
+            EmbeddedPreview {
+                id: previewPane
+                readonly property real previewMin: 200
+                readonly property real previewMax: Math.max(previewMin + 80, Math.round(parent.width * 0.6))
+                property real previewWidth: window.launcher.previewPaneWidth > 0
+                    ? Math.min(Math.max(window.launcher.previewPaneWidth, previewMin), previewMax)
+                    : Math.min(Math.max(Math.round(parent.width * 0.38), previewMin), previewMax)
+                property real dragStartWidth: 0
+                anchors.top: parent.top
+                anchors.topMargin: (window.showHome ? home.height : 0) + window.headingHeight
+                anchors.bottom: parent.bottom
+                anchors.right: parent.right
+                width: visible ? previewWidth : 0
+                // The pane once there are rows to show (the launcher's rows,
+                // not the view's, so this does not depend on the view layout).
+                // Not gated on a selected row: rows are auto-selected as they
+                // arrive, and this avoids a dead binding to view.currentIndex
+                // (the ListView id is assigned later, on the window property).
+                visible: window.launcher.previewEmbedded && window.launcher.results.count > 0
+                preview: window.launcher.preview
+            }
+            Rectangle {
+                id: previewDivider
+                anchors.top: parent.top
+                anchors.topMargin: (window.showHome ? home.height : 0) + window.headingHeight
+                anchors.bottom: parent.bottom
+                anchors.right: previewPane.left
+                width: 1
+                color: Theme.divider
+                visible: previewPane.visible
+            }
+            Rectangle { // the draggable grip over the divider (Qt.SizeHorCursor)
+                id: previewGrip
+                anchors.top: previewDivider.top
+                anchors.bottom: previewDivider.bottom
+                anchors.left: previewDivider.left
+                anchors.leftMargin: -5
+                width: 12
+                color: "transparent"
+                visible: previewDivider.visible
+                z: 5
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.OpenHandCursor
+                    property point startGlobal: Qt.point(0, 0)
+                    property int startWidth: 0
+                    onPressed: (mouse) => {
+                        startGlobal = mapToGlobal(mouse.x, mouse.y)
+                        startWidth = previewPane.previewWidth
+                        cursorShape = Qt.ClosedHandCursor
+                    }
+                    onReleased: {
+                        cursorShape = Qt.OpenHandCursor
+                        window.launcher.previewPaneWidth = previewPane.previewWidth
+                    }
+                    onPositionChanged: (mouse) => {
+                        if (pressed) {
+                            const g = mapToGlobal(mouse.x, mouse.y)
+                            const w = startWidth - (g.x - startGlobal.x)
+                            previewPane.previewWidth = Math.min(Math.max(w, previewPane.previewMin), previewPane.previewMax)
+                        }
+                    }
+                }
+            }
+
             ListView {
                 id: boxList
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: previewPane.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
                 anchors.topMargin: (window.showHome ? home.height : 0) + window.headingHeight
                 topMargin: 4
                 bottomMargin: 4
@@ -999,6 +1147,9 @@ Window {
                     animate: SystemTheme.animations
                 }
                 onContentYChanged: nameTip.dismiss() // scrolled: another row under the pointer
+                // Rows arriving: keep a row selected (the preview pane shows
+                // it). New results start on the first row unless one is held.
+                onCountChanged: if (count > 0 && currentIndex < 0) currentIndex = 0
                 onCurrentIndexChanged: {
                     positionViewAtIndex(currentIndex, ListView.Contain)
                     // Rows can arrive while the opening list is still empty
@@ -1123,6 +1274,7 @@ Window {
                         itemY: resultRow.y
                     }
                     onClicked: (index, modifiers) => window.rowClicked(index, modifiers)
+                    onCurrentRequested: (index) => window.currentRowRequested(index)
                     onActionRequested: (index, action) => {
                         boxList.currentIndex = index
                         window.launcher.trigger(index, action)
@@ -1135,7 +1287,7 @@ Window {
             ListScrollBar {
                 id: boxScrollBar
                 flickable: boxList
-                anchors.right: parent.right
+                anchors.right: boxList.right
                 anchors.top: boxList.top
                 anchors.bottom: parent.bottom
                 // Its own at the window's right edge, not the edge that widens the window.
@@ -1179,6 +1331,7 @@ Window {
         }
 
         Item {
+            id: emptyArea
             width: parent.width
             height: Math.max(80, emptyBelow.implicitHeight + 24) // taller with hints under it
             visible: window.showEmptyState && !window.clipboardBelow && !window.fullHeight
@@ -1196,9 +1349,44 @@ Window {
         Footer {
             id: footer
             width: parent.width
-            visible: !window.clipboardBelow
+            // Nothing typed: the hints mean nothing yet, so the bar stands down.
+            visible: !window.clipboardBelow && window.trimmedQuery.length > 0
             launcher: window.launcher
             frame: window.frame
+        }
+    }
+
+    // Drag the bottom edge to resize the window's height; the rows' list and
+    // the embedded preview in it grow with it. With the pane closed the
+    // window is exactly as tall as its content, so there is nothing to drag.
+    Rectangle {
+        id: heightGrip
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        height: 10
+        visible: !window.panel && previewPane.visible
+        color: "transparent"
+        z: 6
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: Qt.SizeVerCursor
+            property point startGlobal: Qt.point(0, 0)
+            property int startHeight: 0
+            onPressed: (mouse) => {
+                startGlobal = mapToGlobal(mouse.x, mouse.y)
+                startHeight = window.height
+            }
+            onPositionChanged: (mouse) => {
+                if (pressed) {
+                    const g = mapToGlobal(mouse.x, mouse.y)
+                    const h = startHeight + (g.y - startGlobal.y)
+                    // Never taller than ~85% of the screen: past that the rows'
+                    // pane would just be empty space under the results.
+                    window.userHeight = Math.max(200, Math.min(h, Math.round(Screen.height * 0.85)))
+                }
+            }
+            onReleased: window.launcher.previewPaneHeight = window.userHeight
         }
     }
 

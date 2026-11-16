@@ -2,8 +2,8 @@ pragma ComponentBehavior: Bound
 import QtQuick
 import WinShun
 
-// The questions the 插件 page asks, over the settings window (as
-// UpdateDialog does): the permissions a plugin wants before it is turned
+// The questions the 插件 page asks, over the settings window: the
+// permissions a plugin wants before it is turned
 // on (the plugin design, §3.4), whether to replace a version already
 // installed, and whether a plugin's data goes with it when it is removed.
 Item {

@@ -38,7 +38,7 @@ QString iconText(const IconSpec& spec)
 
 QString pluginPath(const QString& pluginId, const QString& commandId, const QString& itemId)
 {
-    return kPathPrefix + pluginId + u'/' + commandId + u'/' + itemId;
+    return QString(kPathPrefix) + pluginId + u'/' + commandId + u'/' + itemId;
 }
 
 bool isPluginPath(QStringView path) noexcept

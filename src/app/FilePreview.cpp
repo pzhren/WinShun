@@ -7,16 +7,31 @@
 #include "platform/ExternalPreview.h"
 #include "platform/PreviewHost.h"
 
+#include <winrt/Windows.Data.Pdf.h>
+#include <winrt/Windows.Foundation.h>
+#include <winrt/Windows.Storage.h>
+#include <winrt/Windows.Storage.Streams.h>
+
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QHash>
+#include <QList>
+#include <QPainter>
+#include <QProcess>
+#include <QStandardPaths>
+#include <QTimer>
 #include <QGuiApplication>
 #include <QLocale>
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QScreen>
 #include <QTransform>
+#include <QXmlStreamReader>
 #include <QtMath>
+#include <miniz.h>
 
 #include <windows.h>
 #include <propvarutil.h>
@@ -26,6 +41,8 @@
 #include <wrl/client.h>
 
 #include <algorithm>
+#include <cmath>
+#include <functional>
 
 using Microsoft::WRL::ComPtr;
 using namespace Qt::StringLiterals;
@@ -35,7 +52,526 @@ namespace ws {
 namespace {
 
 constexpr std::size_t kTextBytes = 1u << 20; // the start of a text file shown: 1 MB
+constexpr std::size_t kEditBytes = 8u << 20; // a text file opened for editing: 8 MB at most
+constexpr std::size_t kOfficeHtmlBytes = 512u << 10; // a Word/sheet/deck preview as HTML: 512 KB at most (a larger
+                                                     // document is read as far as that, then the pane scrolls)
 constexpr qsizetype kPieceChars = 2000; // a longer line goes in pieces (one row of the list each)
+// Markdown and plain text are edited in the pane; anything else shown as text stays read-only.
+const auto editableSuffix = [](const QString& s) {
+    return s == u"md" || s == u"markdown" || s == u"txt" || s == u"text";
+};
+// Word 2007+ is a zip of XML parts: read its text so a Word document previews
+// without the Office preview handler (which the machine may not have).
+const auto officeWordSuffix = [](const QString& s) {
+    return s == u"docx" || s == u"docm";
+};
+// Excel and PowerPoint 2007+ are zips too: their text previews without the
+// Office preview handler as well.
+const auto officeArchiveSuffix = [](const QString& s) {
+    return s == u"xlsx" || s == u"xlsm" || s == u"pptx" || s == u"pptm";
+};
+// Word, Excel, PowerPoint (old and 2007+ forms): shown by rendering the file
+// to a PDF first (OfficeConvert: LibreOffice or the Office installed here),
+// then previewing that PDF.
+const auto officeSuffix = [](const QString& s) {
+    return s == u"doc" || s == u"docx" || s == u"xls" || s == u"xlsx" || s == u"ppt" || s == u"pptx";
+};
+
+// A PDF held open, drawn a page at a time: Windows.Data.Pdf, the system's own
+// renderer, so no shell preview handler is involved (this machine's PDF
+// handler is WPS's, which fails to load). Made and used on the worker thread
+// only: that thread holds COM as an STA (ComWorker), so the apartment asked
+// for here must be the one it has — the default (an MTA) throws
+// RPC_E_CHANGED_MODE there, which used to make every PDF (and every Office
+// document behind it) fail to render.
+struct PdfDoc {
+    winrt::Windows::Data::Pdf::PdfDocument doc {nullptr};
+    QVector<qreal> aspects; // height over width, a page each
+    int drawnWidth = 0; // the pixel width the pages drawn so far were made at
+};
+
+// Opens the file and reads what each page looks like (points, no rendering):
+// the pane lays the pages out at their own shape before any is drawn.
+static std::shared_ptr<PdfDoc> openPdf(const QString& path)
+{
+    // Reading the shapes of a long document is a call a page; a thousand-page
+    // file is not worth it (the rest keep the last shape seen).
+    constexpr int kAspectsRead = 400;
+    try {
+        winrt::init_apartment(winrt::apartment_type::single_threaded);
+        using namespace winrt::Windows::Storage;
+        using namespace winrt::Windows::Storage::Streams;
+        using namespace winrt::Windows::Data::Pdf;
+        // The file is read whole into memory and let go at once: loaded from
+        // a stream, never from the path, or the document holds the file open
+        // for as long as it lives (LoadFromFileAsync's share mode has no
+        // FILE_SHARE_DELETE) and deleting the previewed file fails with "the
+        // file is open in another program" — this program.
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return {};
+        const QByteArray bytes = f.readAll();
+        f.close();
+        if (bytes.isEmpty())
+            return {};
+        InMemoryRandomAccessStream stream;
+        {
+            DataWriter writer(stream);
+            writer.WriteBytes(winrt::array_view<const uint8_t>(
+                reinterpret_cast<const uint8_t*>(bytes.constData()),
+                reinterpret_cast<const uint8_t*>(bytes.constData()) + bytes.size()));
+            writer.StoreAsync().get();
+            writer.FlushAsync().get();
+            writer.DetachStream(); // the stream outlives the writer; its destructor would close it
+        }
+        stream.Seek(0);
+        const auto document = PdfDocument::LoadFromStreamAsync(stream).get();
+        const uint32_t count = document.PageCount();
+        if (count == 0)
+            return {};
+        auto pdf = std::make_shared<PdfDoc>();
+        pdf->doc = document;
+        pdf->aspects.reserve(static_cast<int>(std::min<uint32_t>(count, kAspectsRead)));
+        for (uint32_t i = 0; i < count && i < kAspectsRead; ++i) {
+            const auto page = document.GetPage(i);
+            const auto size = page.Size();
+            pdf->aspects.append(size.Width > 0 ? size.Height / size.Width : std::sqrt(2.0));
+            page.Close();
+        }
+        return pdf;
+    } catch (...) {
+        return {};
+    }
+}
+
+// Draws one page at this pixel width; empty when it cannot be drawn.
+static QImage drawPdfPage(const std::shared_ptr<PdfDoc>& pdf, int index, int pixelWidth)
+{
+    try {
+        using namespace winrt::Windows::Data::Pdf;
+        using namespace winrt::Windows::Storage::Streams;
+        if (!pdf || index < 0 || index >= static_cast<int>(pdf->doc.PageCount()))
+            return {};
+        const auto page = pdf->doc.GetPage(static_cast<uint32_t>(index));
+        PdfPageRenderOptions options;
+        options.DestinationWidth(static_cast<uint32_t>(std::max(50, pixelWidth)));
+        InMemoryRandomAccessStream stream;
+        page.RenderToStreamAsync(stream, options).get();
+        stream.Seek(0);
+        const auto reader = DataReader(stream.GetInputStreamAt(0));
+        reader.LoadAsync(stream.Size()).get();
+        std::vector<uint8_t> bytes(static_cast<size_t>(stream.Size()));
+        reader.ReadBytes(bytes);
+        page.Close();
+        QImage image;
+        if (!bytes.empty())
+            image.loadFromData(bytes.data(), static_cast<int>(bytes.size()));
+        return image;
+    } catch (...) {
+        return {};
+    }
+}
+
+// The read miniz asks for: a place in the file, some bytes. Backed by the
+// QFile the zip is being read through.
+static size_t readOfficeZipAt(void* opaque, mz_uint64 ofs, void* buf, size_t n)
+{
+    auto* file = static_cast<QFile*>(opaque);
+    if (!file || !file->seek(static_cast<qint64>(ofs)))
+        return 0;
+    return static_cast<size_t>(file->read(static_cast<char*>(buf), static_cast<qint64>(n)));
+}
+
+// A 2007+ Office file's zip, open so its entries can be read whole. Small
+// files go into memory (the common case, and the file itself is let go at
+// once); bigger ones are read where they lie through `open` (miniz here is
+// built without stdio, so it is a QFile that reads) — the file is held open
+// only until mz_zip_reader_end, and no copy of a document of hundreds of
+// megabytes is made. `held` owns the bytes when they are in memory; both it
+// and `open` must outlive the zip.
+static bool openOfficeZip(const QString& path, mz_zip_archive& zip, QByteArray& held, std::unique_ptr<QFile>& open)
+{
+    open = std::make_unique<QFile>(path);
+    if (!open->open(QIODevice::ReadOnly)) {
+        open.reset();
+        return false;
+    }
+    const qint64 total = open->size();
+    if (total <= 0 || total > (2ll << 30)) { // nothing in, or something absurd
+        open.reset();
+        return false;
+    }
+    if (total <= (64 << 20)) {
+        held = open->readAll();
+        open.reset();
+        return !held.isEmpty()
+            && mz_zip_reader_init_mem(&zip, held.constData(), static_cast<size_t>(held.size()), 0) != 0;
+    }
+    std::memset(&zip, 0, sizeof(zip));
+    zip.m_pRead = readOfficeZipAt;
+    zip.m_pIO_opaque = open.get();
+    if (mz_zip_reader_init(&zip, static_cast<mz_uint64>(total), 0) == 0) {
+        open.reset();
+        return false;
+    }
+    return true;
+}
+
+// One entry of an open zip, whole; empty when it is not there or would be a
+// document of its own to hold (a part of an Office file is kilobytes to a
+// few megabytes; anything far past that is not worth the RAM).
+static QByteArray officeZipEntry(mz_zip_archive& zip, const char* name)
+{
+    const int idx = mz_zip_reader_locate_file(&zip, name, nullptr, 0);
+    if (idx < 0)
+        return {};
+    mz_zip_archive_file_stat st {};
+    if (!mz_zip_reader_file_stat(&zip, idx, &st) || st.m_uncomp_size > (256u << 20))
+        return {};
+    size_t size = 0;
+    if (void* data = mz_zip_reader_extract_to_heap(&zip, idx, &size, 0)) {
+        QByteArray out(static_cast<const char*>(data), static_cast<int>(size));
+        mz_free(data);
+        return out;
+    }
+    return {};
+}
+
+static bool officeWordText(const QString& path, QString& out, int maxChars)
+{
+    mz_zip_archive zip {};
+    QByteArray held;
+    std::unique_ptr<QFile> openFile; // the file a big zip is read through; outlives the zip
+    if (!openOfficeZip(path, zip, held, openFile))
+        return false;
+    const QByteArray bytes = officeZipEntry(zip, "word/document.xml");
+    if (bytes.isEmpty()) {
+        mz_zip_reader_end(&zip);
+        return false;
+    }
+
+    // <w:t>…</w:t> inside a <w:p>: the document's text, one paragraph a line.
+    QString text;
+    QXmlStreamReader xml(bytes);
+    while (!xml.atEnd() && text.size() < maxChars) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            if (xml.name() == QLatin1String("p"))
+                text += u'\n';
+            else if (xml.name() == QLatin1String("t"))
+                text += xml.readElementText();
+        }
+    }
+    mz_zip_reader_end(&zip);
+    out = text;
+    return true;
+}
+static bool officeWordHtml(const QString& path, QString& out, int maxChars)
+{
+    mz_zip_archive zip {};
+    QByteArray held;
+    std::unique_ptr<QFile> openFile; // the file a big zip is read through; outlives the zip
+    if (!openOfficeZip(path, zip, held, openFile))
+        return false;
+    const QByteArray bytes = officeZipEntry(zip, "word/document.xml");
+    if (bytes.isEmpty()) {
+        mz_zip_reader_end(&zip);
+        return false;
+    }
+
+    // A Word file as HTML: headings, paragraphs, their run bold/italic, size
+    // and colour, plus tables and list items — so the preview reads close to
+    // the document, without the Office preview handler or the Office engine.
+    const auto escape = [](const QString& s) {
+        QString e = s;
+        e.replace(QChar(u'&'), u"&amp;"_s).replace(QChar(u'<'), u"&lt;"_s).replace(QChar(u'>'), u"&gt;"_s);
+        return e;
+    };
+    QString html = u"<html><body style='font-family:Segoe UI,serif;'>"_s;
+    QString cur; // the paragraph being read, as HTML
+    QString tbl; // a table being read, as HTML
+    bool inTable = false, inCell = false;
+    bool bold = false, italic = false;
+    int sizeHalf = 0;   // w:sz, half-points (24 => 12pt)
+    QString color;      // w:color, RRGGBB
+    int heading = 0;
+    QString align;      // w:jc
+    bool listItem = false;
+    const auto paraStyle = [&] {
+        QString s;
+        if (!align.isEmpty())
+            s += u"text-align:"_s + align + u";"_s;
+        return s;
+    };
+    const auto flushPara = [&] {
+        if (cur.isEmpty())
+            return;
+        QString inner = cur;
+        QString wrapped;
+        if (heading >= 1 && heading <= 6)
+            wrapped = u"<h%1>%2</h%1>"_s.arg(heading).arg(inner);
+        else {
+            QString pstyle = paraStyle();
+            if (listItem) {
+                pstyle += u"margin-left:24px;"_s;
+                inner = u"•&nbsp;&nbsp;"_s + inner;
+            }
+            wrapped = u"<p style='%1'>%2</p>"_s.arg(pstyle).arg(inner);
+        }
+        if (inCell || inTable)
+            tbl += wrapped;
+        else
+            html += wrapped;
+        cur.clear();
+    };
+    QXmlStreamReader xml(bytes);
+    while (!xml.atEnd() && html.size() + tbl.size() < maxChars) {
+        xml.readNext();
+        if (xml.isStartElement()) {
+            const QStringView n = xml.name();
+            if (n == u"tbl") {
+                flushPara();
+                inTable = true;
+                tbl += u"<table style='border-collapse:collapse;width:100%;'>"_s;
+            } else if (n == u"tr") {
+                if (inTable)
+                    tbl += u"<tr>"_s;
+            } else if (n == u"tc") {
+                if (inTable) {
+                    flushPara();
+                    inCell = true;
+                    tbl += u"<td style='border:1px solid #bbbbbb;padding:4px 6px;vertical-align:top;'>"_s;
+                }
+            } else if (n == u"p") {
+                flushPara();
+                heading = 0;
+                align.clear();
+                listItem = false;
+            } else if (n == u"pStyle") {
+                const QString v = xml.attributes().value(u"val").toString();
+                if (v.startsWith(u"Heading"))
+                    heading = v.mid(7).toInt();
+            } else if (n == u"numPr")
+                listItem = true;
+            else if (n == u"jc")
+                align = xml.attributes().value(u"val").toString();
+            else if (n == u"b")
+                bold = true;
+            else if (n == u"i")
+                italic = true;
+            else if (n == u"sz")
+                sizeHalf = xml.attributes().value(u"val").toInt();
+            else if (n == u"color")
+                color = xml.attributes().value(u"val").toString();
+            else if (n == u"t") {
+                QString r = escape(xml.readElementText());
+                if (bold)
+                    r = u"<b>"_s + r + u"</b>"_s;
+                if (italic)
+                    r = u"<i>"_s + r + u"</i>"_s;
+                if (sizeHalf > 0 || !color.isEmpty()) {
+                    QString st = u"font-size:"_s + QString::number(sizeHalf / 2.0) + u"pt;"_s;
+                    if (!color.isEmpty())
+                        st += u"color:#"_s + color + u";"_s;
+                    r = u"<span style='%1'>%2</span>"_s.arg(st).arg(r);
+                }
+                cur += r;
+            }
+        } else if (xml.isEndElement()) {
+            const QStringView n = xml.name();
+            if (n == u"b")
+                bold = false;
+            else if (n == u"i")
+                italic = false;
+            else if (n == u"r") { // a run is done: its formatting ends with it
+                bold = false;
+                italic = false;
+                sizeHalf = 0;
+                color.clear();
+            } else if (n == u"p")
+                flushPara();
+            else if (n == u"tc") {
+                if (inTable) {
+                    flushPara();
+                    tbl += u"</td>"_s;
+                    inCell = false;
+                }
+            } else if (n == u"tr") {
+                if (inTable)
+                    tbl += u"</tr>"_s;
+            } else if (n == u"tbl") {
+                if (inTable) {
+                    flushPara();
+                    tbl += u"</table>"_s;
+                    html += tbl;
+                    tbl.clear();
+                    inTable = false;
+                    inCell = false;
+                }
+            }
+        }
+    }
+    mz_zip_reader_end(&zip);
+    html += u"</body></html>"_s;
+    out = html;
+    return true;
+}
+// The thumbnail Office kept in a 2007+ file (docProps/thumbnail.jpeg: the
+// first slide or page, small, written when the file was saved). Read from the
+// zip at once — no converter, no waiting — so the pane has something of the
+// document to show while the PDF of it is being made. Null when the file has
+// none (not every program that writes one saves a thumbnail).
+static QImage officeThumbnail(const QString& path)
+{
+    mz_zip_archive zip {};
+    QByteArray held;
+    std::unique_ptr<QFile> openFile; // the file a big zip is read through; outlives the zip
+    if (!openOfficeZip(path, zip, held, openFile))
+        return {};
+    const QByteArray bytes = officeZipEntry(zip, "docProps/thumbnail.jpeg");
+    mz_zip_reader_end(&zip);
+    QImage image;
+    if (!bytes.isEmpty())
+        image.loadFromData(bytes);
+    return image;
+}
+
+static bool officeArchiveHtml(const QString& path, QString& out, int maxChars)
+{
+    mz_zip_archive zip {};
+    QByteArray held;
+    std::unique_ptr<QFile> openFile; // the file a big zip is read through; outlives the zip
+    if (!openOfficeZip(path, zip, held, openFile))
+        return false;
+
+    const QString suffix = QFileInfo(path).suffix().toLower();
+    const bool isXlsx = suffix == u"xlsx" || suffix == u"xlsm";
+    const auto escape = [](const QString& s) {
+        QString e = s;
+        e.replace(QChar(u'&'), u"&amp;"_s).replace(QChar(u'<'), u"&lt;"_s).replace(QChar(u'>'), u"&gt;"_s);
+        return e;
+    };
+    QString html = u"<html><body style='font-family:Segoe UI,serif;'>"_s;
+    const mz_uint count = mz_zip_reader_get_num_files(&zip);
+
+    if (isXlsx) {
+        // Shared strings first: cells reference them by index.
+        QStringList shared;
+        for (mz_uint i = 0; i < count; ++i) {
+            mz_zip_archive_file_stat st {};
+            if (!mz_zip_reader_file_stat(&zip, i, &st))
+                continue;
+            const QString name = QString::fromUtf8(st.m_filename);
+            if (!name.endsWith(u".xml") || !name.contains(u"sharedStrings"))
+                continue;
+            size_t size = 0;
+            void* data = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+            if (!data)
+                continue;
+            QXmlStreamReader x(QByteArray(static_cast<const char*>(data), static_cast<int>(size)));
+            QString item;
+            while (!x.atEnd()) {
+                x.readNext();
+                if (x.isStartElement()) {
+                    if (x.name() == u"si")
+                        item.clear();
+                    else if (x.name() == u"t")
+                        item += x.readElementText();
+                } else if (x.isEndElement() && x.name() == u"si")
+                    shared.append(item);
+            }
+            mz_free(data);
+        }
+        // Each worksheet as a table.
+        for (mz_uint i = 0; i < count && html.size() < maxChars; ++i) {
+            mz_zip_archive_file_stat st {};
+            if (!mz_zip_reader_file_stat(&zip, i, &st))
+                continue;
+            const QString name = QString::fromUtf8(st.m_filename);
+            if (!name.endsWith(u".xml") || !name.contains(u"worksheets"))
+                continue;
+            size_t size = 0;
+            void* data = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+            if (!data)
+                continue;
+            QXmlStreamReader x(QByteArray(static_cast<const char*>(data), static_cast<int>(size)));
+            html += u"<table style='border-collapse:collapse;width:100%;'>"_s;
+            QString cell;
+            bool sharedRef = false, hasCell = false;
+            while (!x.atEnd() && html.size() < maxChars) {
+                x.readNext();
+                if (x.isStartElement()) {
+                    const QStringView n = x.name();
+                    if (n == u"row")
+                        html += u"<tr>"_s;
+                    else if (n == u"c") {
+                        cell.clear();
+                        hasCell = false;
+                        sharedRef = (x.attributes().value(u"t") == u"s");
+                    } else if (n == u"v" || n == u"t") {
+                        cell = x.readElementText();
+                        hasCell = true;
+                    }
+                } else if (x.isEndElement()) {
+                    const QStringView n = x.name();
+                    if (n == u"c") {
+                        QString val = cell;
+                        if (sharedRef && hasCell) {
+                            const int idx = val.toInt();
+                            if (idx >= 0 && idx < shared.size())
+                                val = shared.at(idx);
+                        }
+                        html += u"<td style='border:1px solid #bbbbbb;padding:2px 6px;'>"_s + escape(val) + u"</td>"_s;
+                    } else if (n == u"row")
+                        html += u"</tr>"_s;
+                }
+            }
+            html += u"</table>"_s;
+            mz_free(data);
+        }
+    } else {
+        // Each slide of the deck as a block of paragraphs.
+        for (mz_uint i = 0; i < count && html.size() < maxChars; ++i) {
+            mz_zip_archive_file_stat st {};
+            if (!mz_zip_reader_file_stat(&zip, i, &st))
+                continue;
+            const QString name = QString::fromUtf8(st.m_filename);
+            if (!name.endsWith(u".xml") || !name.contains(u"slides"))
+                continue;
+            size_t size = 0;
+            void* data = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+            if (!data)
+                continue;
+            QXmlStreamReader x(QByteArray(static_cast<const char*>(data), static_cast<int>(size)));
+            html += u"<div style='border-bottom:1px solid #dddddd;padding:8px 0;'>"_s;
+            QString para;
+            bool inPara = false;
+            while (!x.atEnd() && html.size() < maxChars) {
+                x.readNext();
+                if (x.isStartElement()) {
+                    const QStringView n = x.name();
+                    if (n == u"p") {
+                        inPara = true;
+                        para.clear();
+                    } else if (n == u"t" && inPara)
+                        para += x.readElementText();
+                } else if (x.isEndElement()) {
+                    if (x.name() == u"p" && inPara) {
+                        if (!para.isEmpty())
+                            html += u"<p>"_s + escape(para) + u"</p>"_s;
+                        inPara = false;
+                    }
+                }
+            }
+            html += u"</div>"_s;
+            mz_free(data);
+        }
+    }
+    mz_zip_reader_end(&zip);
+    html += u"</body></html>"_s;
+    out = html;
+    return !html.isEmpty();
+}
 constexpr int kLargestPicture = 4096; // pixels on the longer side; larger ones are scaled down as decoded
 constexpr int kThumbnailPx = 512;
 constexpr int kFolderItemsCounted = 10000;
@@ -148,12 +684,12 @@ QImage decodePicture(const std::wstring& path, QSize* original)
     if (original)
         *original = QSize(static_cast<int>(width), static_cast<int>(height));
     switch (orientation) {
-    case 2: return image.flipped(Qt::Horizontal);
-    case 3: return image.flipped(Qt::Horizontal | Qt::Vertical);
-    case 4: return image.flipped(Qt::Vertical);
-    case 5: return image.transformed(QTransform().rotate(90)).flipped(Qt::Horizontal);
+    case 2: return image.mirrored(true, false);
+    case 3: return image.mirrored(true, true);
+    case 4: return image.mirrored(false, true);
+    case 5: return image.transformed(QTransform().rotate(90)).mirrored(true, false);
     case 6: return image.transformed(QTransform().rotate(90));
-    case 7: return image.transformed(QTransform().rotate(90)).flipped(Qt::Vertical);
+    case 7: return image.transformed(QTransform().rotate(90)).mirrored(false, true);
     case 8: return image.transformed(QTransform().rotate(270));
     default: return image;
     }
@@ -227,9 +763,25 @@ struct FilePreview::Loaded {
     int rows = 0; // Text: lines as shown, long ones wrapped (about)
     QString message;
     QUuid handler; // Handler: the preview handler's CLSID
+    QString handlerPath; // Handler: preview this path instead of item.path (an Office doc rendered to PDF)
+    QString editText; // Text when editable: the whole file, for the pane's editor
+    bool editable = false;
+    QString richText; // RichText: a Word file as formatted HTML
+    std::shared_ptr<Pdf> pdf; // Picture: a PDF (or an Office document as one), a page at a time
+    int pageCount = 0; // Picture: its pages (0: a plain picture)
+    // An Office document's first look at it (its thumbnail, its words): the
+    // pages are still being made, and replace this when they are.
+    bool busy = false;
 };
 
-// The pictures QML shows ("image://preview/<n>"): only the latest one is kept.
+// A PDF held open: the document itself (drawn on the worker thread) and the
+// pages drawn so far (kept here so the pane's pictures come from memory).
+struct FilePreview::Pdf : PdfDoc {
+};
+
+// The pictures QML shows ("image://preview/<n>"): only the latest one is
+// kept; and a PDF's pages ("image://preview/page/<index>?r=<n>"), as many as
+// the pane has looked at lately.
 class FilePreview::Images : public QQuickImageProvider {
 public:
     Images()
@@ -239,7 +791,16 @@ public:
     QImage requestImage(const QString& id, QSize* size, const QSize&) override
     {
         QMutexLocker lock(&m_mutex);
-        const QImage image = id == m_id ? m_image : QImage();
+        QImage image;
+        if (id.startsWith(u"page/"_s)) {
+            const QString path = id.mid(5, id.indexOf(u'?') < 0 ? -1 : id.indexOf(u'?') - 5);
+            bool ok = false;
+            const int index = path.toInt(&ok);
+            if (ok)
+                image = m_pages.value(index);
+        } else if (id == m_id) {
+            image = m_image;
+        }
         if (size)
             *size = image.size();
         return image;
@@ -250,11 +811,43 @@ public:
         m_id = id;
         m_image = std::move(image);
     }
+    // A document was opened (or closed): the pages of the one before it go,
+    // and a page of that one arriving late is dropped rather than shown.
+    void setGeneration(quint64 generation)
+    {
+        QMutexLocker lock(&m_mutex);
+        m_generation = generation;
+        m_pages.clear();
+        m_order.clear();
+    }
+    void setPage(quint64 generation, int index, const QImage& image)
+    {
+        QMutexLocker lock(&m_mutex);
+        if (generation != m_generation || image.isNull())
+            return;
+        constexpr int kPagesKept = 12; // a pane shows two or three; the rest are ahead
+        if (!m_pages.contains(index)) {
+            m_order.append(index);
+            while (m_order.size() > kPagesKept) {
+                const int oldest = m_order.takeFirst();
+                m_pages.remove(oldest);
+            }
+        }
+        m_pages.insert(index, image);
+    }
+    bool hasPage(int index)
+    {
+        QMutexLocker lock(&m_mutex);
+        return m_pages.contains(index);
+    }
 
 private:
     QMutex m_mutex;
     QString m_id;
     QImage m_image;
+    quint64 m_generation = 0;
+    QHash<int, QImage> m_pages;
+    QList<int> m_order; // oldest first, to let the ones off the pane go
 };
 
 FilePreview::FilePreview(QObject* parent)
@@ -268,8 +861,11 @@ FilePreview::FilePreview(QObject* parent)
     m_slowTimer.setInterval(250);
     connect(&m_slowTimer, &QTimer::timeout, this, [this] {
         setSlow(true);
-        // Taking a while: the window now, saying so, rather than nothing at all.
-        if (m_open && !m_external && m_kind == Loading && (!m_window || !m_window->isVisible()))
+        // Taking a while: the pane says so (正在读取…). A window of its own
+        // is only for the preview beside the launcher (预览嵌入右侧 off) —
+        // shown while embedded, it would sit beside the pane showing the
+        // same file twice (this used to happen on every load past 250 ms).
+        if (m_open && !m_external && !m_embedded && m_kind == Loading && (!m_window || !m_window->isVisible()))
             showWindow({});
     });
 }
@@ -322,6 +918,15 @@ void FilePreview::setDark(bool dark)
     m_dark = dark;
 }
 
+void FilePreview::setEmbedded(bool on)
+{
+    if (m_embedded == on)
+        return;
+    m_embedded = on;
+    if (on)
+        m_builtInOnly = true; // embedded: no external window (QuickLook/Seer)
+}
+
 void FilePreview::setTextExtensions(QStringList extensions)
 {
     for (QString& e : extensions)
@@ -341,7 +946,7 @@ bool FilePreview::isShowing(const QString& path) const
 
 void FilePreview::show(const Item& item)
 {
-    if (!m_builtInOnly) {
+    if (!m_builtInOnly && !m_embedded) {
         if (const std::optional<extpreview::Engine> engine = extpreview::running()) {
             if (m_open && !m_external)
                 close(); // ours, opened while none ran
@@ -375,6 +980,7 @@ void FilePreview::follow(const std::optional<Item>& item)
         m_host->hide();
         m_item = {};
         m_kind = Message;
+        m_busy = false;
         m_message = tr("这一行没有可预览的文件");
         m_summary.clear();
         m_slowTimer.stop();
@@ -406,6 +1012,10 @@ void FilePreview::close()
     m_lines.setStringList({});
     m_lineNumbers.clear();
     m_images->set({}, {});
+    m_images->setGeneration(m_generation.load()); // the pages drawn go with it
+    m_pdf.reset();
+    m_pageCount = 0;
+    m_busy = false;
     m_imageUrl.clear();
     emit contentChanged();
 }
@@ -444,6 +1054,21 @@ void FilePreview::openFile()
         emit openRequested(m_item.path);
 }
 
+bool FilePreview::saveText(const QString& text)
+{
+    if (!m_editable || m_item.isDir || m_item.path.isEmpty())
+        return false;
+    QFile file(m_item.path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    const QByteArray bytes = text.toUtf8();
+    const bool ok = file.write(bytes) == bytes.size();
+    file.close();
+    if (ok)
+        m_editText = text;
+    return ok;
+}
+
 void FilePreview::setSlow(bool slow)
 {
     if (m_slow == slow)
@@ -460,6 +1085,12 @@ void FilePreview::load(const Item& item)
     m_message.clear();
     m_summary.clear();
     m_facts.clear();
+    // The pages of the file before this one go now; a page of it arriving
+    // late (the worker still drawing it) is dropped rather than shown.
+    m_pdf.reset();
+    m_pageCount = 0;
+    m_busy = false;
+    m_images->setGeneration(generation);
     setSlow(false);
     m_slowTimer.start();
     if (m_host)
@@ -467,11 +1098,14 @@ void FilePreview::load(const Item& item)
     emit contentChanged();
 
     const QStringList textTypes = m_textExtensions;
+    // Who turns a document into the PDF the pane draws (OfficeConvert): the
+    // setting as it is now, for this file.
+    const office::Engine officeEngine = m_officeEngine;
     // A handler failed on it a moment ago: what is known instead.
     const bool noHandler = m_noHandlerFor.compare(item.path, Qt::CaseInsensitive) == 0;
     QPointer<FilePreview> self(this);
     const auto stale = [self, generation] { return !self || self->m_generation.load() != generation; };
-    m_worker->post([self, item, textTypes, noHandler, generation, stale] {
+    m_worker->post([self, item, textTypes, officeEngine, noHandler, generation, stale] {
         if (stale())
             return;
         auto loaded = std::make_shared<Loaded>();
@@ -516,16 +1150,114 @@ void FilePreview::load(const Item& item)
                     loaded->image = std::move(image);
                     done = true;
                 }
+            } else if (!cloudOnly && (suffix == u"pdf" || officeSuffix(suffix) || officeWordSuffix(suffix)
+                     || officeArchiveSuffix(suffix))) {
+                // PDFs are drawn page by page with Windows.Data.Pdf — the
+                // system's own renderer, so no shell preview handler is
+                // involved (this machine's PDF handler is WPS's, which fails
+                // to load, and the pane stays embedded). An Office document
+                // goes to a PDF first, through LibreOffice or the Office
+                // installed here (OfficeConvert); without either (or should
+                // that fail), a 2007+ file's text is read straight out of its
+                // XML parts as HTML for the pane's rich-text view. This branch
+                // stands before the text one: a document is never text, and
+                // the text branch would otherwise take it (it catches files
+                // nothing else would show) and leave the documents unseen.
+                // A converter is only asked for files under a ceiling: past
+                // it the conversion would outlast any wait and the PDF it
+                // makes would be a load of memory of its own — those take
+                // the text way below instead. (The wait itself is given in
+                // proportion to the size: OfficeConvert's convertLimitMs.)
+                constexpr qint64 kOfficeConvertMaxBytes = 512ll << 20;
+                QString pdfPath;
+                if (suffix == u"pdf")
+                    pdfPath = item.path;
+                else if (bytes <= kOfficeConvertMaxBytes) {
+                    // Made before, of this same version of the document: shown
+                    // straight away, no converter to wait for.
+                    pdfPath = office::cachedPdf(item.path, officeEngine);
+                    if (pdfPath.isEmpty()) {
+                        // A converter starts cold: seconds of nothing on the
+                        // pane. Something of the document goes up first — the
+                        // thumbnail Office kept in it, or failing that its
+                        // words — and the pages replace it when they come.
+                        auto first = std::make_shared<Loaded>();
+                        if (const QImage thumb = officeThumbnail(item.path); !thumb.isNull()) {
+                            first->kind = Picture;
+                            first->image = thumb;
+                            first->imageSize = thumb.size();
+                        } else if (officeWordSuffix(suffix) || officeArchiveSuffix(suffix)) {
+                            QString html;
+                            if (officeWordSuffix(suffix)
+                                ? officeWordHtml(item.path, html, static_cast<int>(kOfficeHtmlBytes))
+                                : officeArchiveHtml(item.path, html, static_cast<int>(kOfficeHtmlBytes))) {
+                                first->kind = RichText;
+                                first->richText = std::move(html);
+                            }
+                        }
+                        if (first->kind != Message) {
+                            first->summary = summary.join(u"  ·  "_s);
+                            first->busy = true;
+                            QMetaObject::invokeMethod(self, [self, generation, first] {
+                                if (self)
+                                    self->apply(generation, first);
+                            }, Qt::QueuedConnection);
+                        }
+                        // Moving on to another row ends this conversion where
+                        // it stands: a queue of them behind the pane's own
+                        // choices would take a minute to drain.
+                        pdfPath = office::toPdf(item.path, officeEngine, stale);
+                    }
+                }
+                if (!pdfPath.isEmpty() && QFile::exists(pdfPath)) {
+                    // Opened, not drawn: the pane draws the pages it looks at
+                    // (requestPage), at its own width and the screen's scale.
+                    std::shared_ptr<PdfDoc> opened = openPdf(pdfPath);
+                    if (opened) {
+                        const int pages = static_cast<int>(opened->doc.PageCount());
+                        auto pdf = std::make_shared<Pdf>();
+                        pdf->doc = opened->doc;
+                        pdf->aspects = opened->aspects;
+                        loaded->kind = Picture;
+                        loaded->pdf = std::move(pdf);
+                        loaded->pageCount = pages;
+                        summary.insert(summary.size() - 1,
+                            QCoreApplication::translate("ws::FilePreview", "%n 页", nullptr, pages));
+                        done = true;
+                    }
+                }
+                if (!done && (officeWordSuffix(suffix) || officeArchiveSuffix(suffix))) {
+                    QString html;
+                    if (officeWordSuffix(suffix) ? officeWordHtml(item.path, html, static_cast<int>(kOfficeHtmlBytes))
+                                                 : officeArchiveHtml(item.path, html, static_cast<int>(kOfficeHtmlBytes))) {
+                        loaded->kind = RichText;
+                        loaded->richText = std::move(html);
+                        // No converter ran (there is none, or it failed, or the
+                        // document is too big for one): the words are here, the
+                        // page is not. Said under the name, so the plain look is
+                        // explained (and the settings say what to install).
+                        summary.insert(1, QCoreApplication::translate("ws::FilePreview",
+                            bytes > kOfficeConvertMaxBytes && suffix != u"pdf"
+                                ? "文字版（文件较大，不渲染页面）"
+                                : "文字版"));
+                        done = true;
+                    }
+                }
             } else if (!cloudOnly && (isText(suffix, textTypes) || suffix.isEmpty() || noHandler || !PreviewHost::handlerFor(item.path))) {
                 // A text kind; or no extension, or nothing else would show
                 // it: text if it reads as text.
-                const filetext::Head head = filetext::readHead(native, kTextBytes);
+                const bool edit = !cloudOnly && editableSuffix(suffix);
+                const filetext::Head head = filetext::readHead(native, edit ? kEditBytes : kTextBytes);
                 if (head.status == filetext::Status::Ok && head.text.isEmpty()) {
                     loaded->kind = Message;
                     loaded->message = QCoreApplication::translate("ws::FilePreview", "空文件");
                     done = true;
                 } else if (head.status == filetext::Status::Ok) {
                     loaded->kind = Text;
+                    if (edit && !head.cut) { // small enough: edit it in the pane
+                        loaded->editable = true;
+                        loaded->editText = head.text;
+                    }
                     const QStringList lines = head.text.split(u'\n');
                     int count = static_cast<int>(lines.size());
                     if (count > 1 && lines.last().isEmpty())
@@ -608,24 +1340,81 @@ void FilePreview::apply(quint64 generation, std::shared_ptr<Loaded> loaded)
     m_slowTimer.stop();
     setSlow(false);
     m_kind = loaded->kind;
+    m_busy = loaded->busy;
     m_summary = loaded->summary;
     m_facts = loaded->facts;
     m_message = loaded->message;
     m_imageSize = loaded->imageSize;
+    m_pdf = std::move(loaded->pdf);
+    m_pageCount = loaded->pageCount;
     m_lineNumbers = loaded->numbers;
     m_lineCount = loaded->lineCount;
     m_textRows = loaded->rows;
     m_lines.setStringList(loaded->lines);
+    m_editable = loaded->editable;
+    m_editText = loaded->editText;
+    m_richText = loaded->richText;
+    m_handlerPath = loaded->handlerPath;
     const QString id = QString::number(generation);
     m_imageUrl = loaded->image.isNull() ? QString() : u"image://preview/"_s + id;
     m_images->set(id, std::move(loaded->image));
     QSize wanted;
-    if (m_kind == Picture)
+    if (m_kind == Picture && m_pageCount > 0) {
+        // A document: a page's shape, at the size a page reads well at.
+        const qreal aspect = pageAspect(0);
+        wanted = QSize(720, std::clamp(static_cast<int>(720 * aspect), 360, 1400));
+    } else if (m_kind == Picture) {
         wanted = m_imageSize;
-    showWindow(wanted);
+    }
+    if (!m_embedded)
+        showWindow(wanted); // embedded: no window of its own, the launcher's pane shows the content
+    else if (m_window)
+        m_window->hide(); // the pane is the preview: a window left over from another setting goes
     emit contentChanged();
     if (m_kind == Handler)
         startHandler(generation, loaded->handler);
+}
+
+// ---- a PDF's pages -----------------------------------------------------------------
+
+qreal FilePreview::pageAspect(int index) const
+{
+    constexpr qreal kA4 = 1.4142135623730951; // upright, when nothing better is known
+    if (!m_pdf || m_pdf->aspects.isEmpty())
+        return kA4;
+    const int last = static_cast<int>(m_pdf->aspects.size()) - 1;
+    // Pages past the ones whose shape was read take the last shape seen.
+    return m_pdf->aspects[std::clamp(index, 0, last)];
+}
+
+void FilePreview::requestPage(int index, int pixelWidth)
+{
+    const std::shared_ptr<Pdf> pdf = m_pdf;
+    if (!pdf || m_kind != Picture || index < 0 || index >= m_pageCount || pixelWidth <= 0)
+        return;
+    pixelWidth = std::clamp(pixelWidth, 200, 2400);
+    const quint64 generation = m_generation.load();
+    QPointer<FilePreview> self(this);
+    m_worker->post([self, pdf, index, pixelWidth, generation] {
+        if (!self || self->m_generation.load() != generation)
+            return;
+        // The pane was resized: what was drawn is another width, and goes
+        // (the pages on the pane ask for themselves again at the new one).
+        if (pdf->drawnWidth != pixelWidth) {
+            pdf->drawnWidth = pixelWidth;
+            self->m_images->setGeneration(generation);
+        }
+        if (self->m_images->hasPage(index))
+            return; // already drawn at this width
+        const QImage page = drawPdfPage(pdf, index, pixelWidth);
+        if (page.isNull())
+            return;
+        self->m_images->setPage(generation, index, page);
+        QMetaObject::invokeMethod(self, [self, index] {
+            if (self)
+                emit self->pageReady(index);
+        }, Qt::QueuedConnection);
+    });
 }
 
 // ---- the window --------------------------------------------------------------------
@@ -773,25 +1562,41 @@ QRect FilePreview::placeBeside(QSize wanted)
 
 bool FilePreview::screenRect(QQuickItem* item, int* left, int* top, int* right, int* bottom) const
 {
-    if (!item || !m_window)
+    if (!item)
         return false;
-    // Logical within the window to physical on the screen, by the window's
-    // own scale (its monitor's), from where its client area is.
-    POINT origin {0, 0};
-    if (!::ClientToScreen(reinterpret_cast<HWND>(m_window->winId()), &origin))
+    // The host window: our own (preview window), or the launcher's when embedded.
+    QWindow* host = nullptr;
+    if (m_embedded)
+        host = m_launcher;
+    else
+        host = m_window;
+    if (!host)
         return false;
-    const qreal dpr = m_window->devicePixelRatio();
-    const QPointF at = item->mapToScene(QPointF(0, 0));
-    *left = origin.x + qRound(at.x() * dpr);
-    *top = origin.y + qRound(at.y() * dpr);
-    *right = origin.x + qRound((at.x() + item->width()) * dpr);
-    *bottom = origin.y + qRound((at.y() + item->height()) * dpr);
+    // The area's global rectangle comes from QML: mapToScene()/mapToGlobal()
+    // on the C++ side stop inside the bound EmbeddedPreview component and lose
+    // the pane's offset. Logical global × the window's scale = physical.
+    const qreal dpr = host->devicePixelRatio();
+    const qreal gx = m_handlerGlobalX, gy = m_handlerGlobalY;
+    const qreal gw = m_handlerGlobalW, gh = m_handlerGlobalH;
+    *left = qRound(gx * dpr);
+    *top = qRound(gy * dpr);
+    *right = qRound((gx + gw) * dpr);
+    *bottom = qRound((gy + gh) * dpr);
     return *right > *left && *bottom > *top;
 }
 
 void FilePreview::setHandlerArea(QQuickItem* area)
 {
     m_handlerArea = area;
+    placeHandler();
+}
+
+void FilePreview::setHandlerGlobal(qreal x, qreal y, qreal w, qreal h)
+{
+    m_handlerGlobalX = x;
+    m_handlerGlobalY = y;
+    m_handlerGlobalW = w;
+    m_handlerGlobalH = h;
     placeHandler();
 }
 
@@ -804,21 +1609,36 @@ void FilePreview::placeHandler()
 
 void FilePreview::startHandler(quint64 generation, const QUuid& handler)
 {
+    const auto showPath = [this]() -> const QString& {
+        return m_handlerPath.isEmpty() ? m_item.path : m_handlerPath;
+    };
     int left, top, right, bottom;
-    if (!m_window || !screenRect(m_handlerArea, &left, &top, &right, &bottom)) {
-        // The area is laid out a moment later (the window just resized): then.
-        QMetaObject::invokeMethod(this, [this, generation, handler] {
+    const HWND host = m_embedded ? (m_launcher ? reinterpret_cast<HWND>(m_launcher->winId()) : nullptr)
+                                 : (m_window ? reinterpret_cast<HWND>(m_window->winId()) : nullptr);
+    if (!host || !screenRect(m_handlerArea, &left, &top, &right, &bottom)) {
+        // The embedded pane's size settles a few frames after the handler's
+        // kind flips (the launcher just finished its search): retry until the
+        // QML-computed global rectangle is ready rather than giving up.
+        std::function<void(int)> retry;
+        retry = [this, generation, handler, &retry](int attempt) {
             if (generation != m_generation.load() || m_kind != Handler)
                 return;
+            if (attempt >= 6) { handlerFailed(generation); return; }
             int l, t, r, b;
-            if (screenRect(m_handlerArea, &l, &t, &r, &b))
-                m_host->show(generation, m_item.path, handler, l, t, r, b, reinterpret_cast<HWND>(m_window->winId()), m_dark);
+            const HWND h = m_embedded ? (m_launcher ? reinterpret_cast<HWND>(m_launcher->winId()) : nullptr)
+                                      : (m_window ? reinterpret_cast<HWND>(m_window->winId()) : nullptr);
+            if (h && screenRect(m_handlerArea, &l, &t, &r, &b))
+                m_host->show(generation, m_handlerPath.isEmpty() ? m_item.path : m_handlerPath,
+                             handler, l, t, r, b, h, m_dark);
             else
-                handlerFailed(generation);
-        }, Qt::QueuedConnection);
+                QTimer::singleShot(40, this, [this, generation, handler, &retry, attempt] {
+                    retry(attempt + 1);
+                });
+        };
+        retry(0);
         return;
     }
-    m_host->show(generation, m_item.path, handler, left, top, right, bottom, reinterpret_cast<HWND>(m_window->winId()), m_dark);
+    m_host->show(generation, showPath(), handler, left, top, right, bottom, host, m_dark);
 }
 
 // The handler could not be made, would not take the file, or did not answer

@@ -102,6 +102,14 @@ NativeArea nativeArea(QScreen* screen)
     return native;
 }
 
+// Put away to the taskbar: Windows says it is 0 × 0 there, no size to place a
+// window by (and no move to make of it) until it is back.
+bool minimized(QWindow* window)
+{
+    const auto hwnd = window ? reinterpret_cast<HWND>(window->winId()) : nullptr;
+    return hwnd && ::IsIconic(hwnd);
+}
+
 } // namespace
 
 Placement::Placement(QString stateFile, QString group, QObject* parent)
@@ -410,7 +418,7 @@ void Placement::setRoomNeeded(int height)
 
 void Placement::resized()
 {
-    if (m_window && m_window->isVisible())
+    if (m_window && m_window->isVisible() && !minimized(m_window))
         QTimer::singleShot(0, this, &Placement::refit); // once QML has given it its new height
 }
 
@@ -489,8 +497,8 @@ QPoint Placement::settleBy(QScreen* screen)
 }
 
 // Off the taskbar by a gap, on the work area's side of it, and as far from
-// the work area's edges; along the taskbar centred on the button (by a
-// taskbar on the left or right: the search box level with it). The rows get
+// the work area's edges; along the taskbar centred on the screen (by a
+// taskbar on the left or right: centred up and down). The rows get
 // the room from there to the far side of the work area.
 QPoint Placement::settleByTaskbar(QScreen* screen)
 {
@@ -511,23 +519,22 @@ QPoint Placement::settleByTaskbar(QScreen* screen)
     // Logical pixels from a physical span.
     const auto logical = [&](int span) { return int(std::floor(span / native.scale)); };
     const QRect& bar = m_taskbar->bar;
-    const QPoint& at = m_taskbar->anchor;
     switch (m_taskbar->edge) {
     case taskbar::Edge::Bottom: {
         const int edge = bar.top() - kTaskbarGap; // the window's bottom
         setRoom(logical(native.toNative(edge, native.origin.y()) - native.work.y()) - kTaskbarGap);
-        return {alongX(at.x() - width / 2), alongY(edge - height)};
+        return {alongX(area.center().x() - width / 2), alongY(edge - height)};
     }
     case taskbar::Edge::Top: {
         const int edge = bar.bottom() + 1 + kTaskbarGap; // the window's top
         setRoom(logical(bottom - native.toNative(edge, native.origin.y())) - kTaskbarGap);
-        return {alongX(at.x() - width / 2), alongY(edge)};
+        return {alongX(area.center().x() - width / 2), alongY(edge)};
     }
     case taskbar::Edge::Left:
     case taskbar::Edge::Right:
         setRoom(area.height() - 2 * kTaskbarGap);
         return {alongX(m_taskbar->edge == taskbar::Edge::Left ? bar.right() + 1 + kTaskbarGap : bar.left() - kTaskbarGap - width),
-            alongY(at.y() - SystemTheme::headerHeight() / 2)};
+            alongY(area.center().y() - height / 2)};
     }
     return m_window->position();
 }
@@ -832,7 +839,7 @@ void Placement::slideOut(std::function<void()> done)
         m_slideSpec = Slide {};
         stepSlide(0);
     };
-    if (!m_window || !m_hwnd || !m_window->isVisible()) {
+    if (!m_window || !m_hwnd || !m_window->isVisible() || minimized(m_window)) {
         finish();
         return;
     }
@@ -1083,7 +1090,7 @@ void Placement::resetWidth()
     m_wantedWidth = m_defaultWidth;
     QSettings(m_stateFile, QSettings::IniFormat).remove(m_group + u"/Width"_s);
     QScreen* screen = m_window ? m_window->screen() : nullptr;
-    if (m_window && m_window->isVisible() && !m_panel && screen) {
+    if (m_window && m_window->isVisible() && !minimized(m_window) && !m_panel && screen) {
         // One move and resize, about its centre, as dragging the edge does.
         RECT r {};
         ::GetWindowRect(reinterpret_cast<HWND>(m_hwnd), &r);

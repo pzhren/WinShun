@@ -33,6 +33,19 @@ add_test(NAME tst_numberhints COMMAND tst_numberhints)
 set_tests_properties(tst_numberhints PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+# The file types' own excluded folders (文件类型 → 排除路径): read, written,
+# and the built-in ones' Id kept (named in the language shown).
+qt_add_executable(tst_filetypes tst_filetypes.cpp ${PROJECT_SOURCE_DIR}/src/app/Settings.cpp)
+target_include_directories(tst_filetypes PRIVATE ${PROJECT_SOURCE_DIR}/src/app)
+target_link_libraries(tst_filetypes PRIVATE wscore Qt6::Test)
+set_target_properties(tst_filetypes PROPERTIES WIN32_EXECUTABLE FALSE)
+if(QT6_IS_SHARED_LIBS_BUILD)
+    set_target_properties(tst_filetypes PROPERTIES QT_QML_MODULE_NO_IMPORT_SCAN TRUE)
+endif()
+add_test(NAME tst_filetypes COMMAND tst_filetypes)
+set_tests_properties(tst_filetypes PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(tst_appearance tst_appearance.cpp
     ${PROJECT_SOURCE_DIR}/src/app/Settings.cpp
     ${PROJECT_SOURCE_DIR}/src/app/SystemTheme.cpp

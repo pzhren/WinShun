@@ -321,7 +321,7 @@ QString PlaceInfo::path() const
 
 QString placePath(const QString& key)
 {
-    return kPathPrefix + key;
+    return QString(kPathPrefix) + key;
 }
 
 bool isPlacePath(QStringView path) noexcept
@@ -849,7 +849,7 @@ PlaceList loadPlaces(const std::stop_token& stop)
                 p.command = u"ms-settings:"_s + uri;
                 p.kind = AppKind::Setting;
                 p.icon = kSettingsApp.toString();
-                p.page = e.key == u"AAA_" + e.page; // "AAA_SettingsPageNetworkEthernet": 以太网设置
+                p.page = e.key == QStringLiteral("AAA_") + e.page; // "AAA_SettingsPageNetworkEthernet": 以太网设置
             }
             if (p.command.isEmpty() || !commandRunsHere(p.command))
                 continue;

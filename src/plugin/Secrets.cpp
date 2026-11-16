@@ -17,7 +17,7 @@ constexpr QStringView kPrefix = u"WinShun/plugin/";
 
 QString target(const QString& pluginId, const QString& key)
 {
-    return kPrefix + pluginId + u'/' + key;
+    return QString(kPrefix) + pluginId + u'/' + key;
 }
 
 bool write(const QString& pluginId, const QString& key, const QString& value)
@@ -69,12 +69,12 @@ bool remove(const QString& pluginId, const QString& key)
 QStringList keysOf(const QString& pluginId)
 {
     QStringList keys;
-    const std::wstring filter = (kPrefix + pluginId + u"/*"_s).toStdWString();
+    const std::wstring filter = (QString(kPrefix) + pluginId + u"/*"_s).toStdWString();
     DWORD count = 0;
     PCREDENTIALW* credentials = nullptr;
     if (!::CredEnumerateW(filter.c_str(), 0, &count, &credentials))
         return keys;
-    const QString prefix = kPrefix + pluginId + u'/';
+    const QString prefix = QString(kPrefix) + pluginId + u'/';
     for (DWORD i = 0; i < count; ++i) {
         if (credentials[i]->Type != CRED_TYPE_GENERIC || !credentials[i]->TargetName)
             continue;

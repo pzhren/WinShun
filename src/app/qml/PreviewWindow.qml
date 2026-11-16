@@ -123,6 +123,7 @@ Window {
         Flickable {
             id: picture
             readonly property bool shown: window.preview.kind === FilePreview.Picture
+                && window.preview.pageCount === 0
             readonly property size natural: Qt.size(window.preview.imageSize.width / window.dpr,
                                                     window.preview.imageSize.height / window.dpr)
             readonly property real fitScale: natural.width > 0 && natural.height > 0
@@ -186,6 +187,18 @@ Window {
                         picture.zoomAt(1 / picture.scale, eventPoint.position.x, eventPoint.position.y)
                 }
             }
+        }
+
+        // A PDF (or an Office document as one) page by page: a page a row,
+        // drawn when it comes into view (PdfPages).
+        PdfPages {
+            id: pages
+            readonly property bool shown: window.preview.kind === FilePreview.Picture
+                && window.preview.pageCount > 0
+            preview: window.preview
+            padding: window.padding
+            anchors.fill: parent
+            visible: shown
         }
 
         // The start of a text file, a line a row (long ones in pieces): numbered, monospaced, wrapped.
@@ -260,6 +273,51 @@ Window {
             onShownChanged: if (shown) window.preview.setHandlerArea(handlerArea)
             onWidthChanged: if (shown) window.preview.setHandlerArea(handlerArea)
             onHeightChanged: if (shown) window.preview.setHandlerArea(handlerArea)
+        }
+
+        // An Office document as formatted HTML (Word, sheets, slides): shown
+        // on a white page like a document, black text that reads as the file,
+        // wrapped to the window's width and scrollable.
+        Item {
+            id: richPane
+            readonly property bool shown: window.preview.kind === FilePreview.RichText
+            visible: shown
+            anchors.fill: parent
+            anchors.margins: 8
+            clip: true
+
+            Flickable {
+                id: richScroll
+                anchors.fill: parent
+                contentWidth: richPage.width
+                contentHeight: richPage.height
+                clip: true
+                boundsBehavior: Flickable.StopAtBounds
+                Rectangle { // the white page the document sits on
+                    id: richPage
+                    width: richScroll.width
+                    height: Math.max(richScroll.height, richText.height + 2 * window.padding)
+                    color: "white"
+                    Text {
+                        id: richText
+                        x: window.padding
+                        y: window.padding
+                        width: richPage.width - 2 * window.padding
+                        textFormat: Text.RichText
+                        text: window.preview.richText
+                        color: "black"
+                        font.pixelSize: Theme.uiBody
+                        wrapMode: Text.WrapAtWordBoundaryOrAnywhere
+                    }
+                }
+            }
+            ListScrollBar {
+                visible: true
+                flickable: richScroll
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+            }
         }
 
         // A thumbnail (or the icon) and what is known about it: a folder, or

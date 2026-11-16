@@ -110,7 +110,9 @@ std::vector<ParsedQuery> homophoneQueries(const ParsedQuery& query);
 // -1 means no match. Thread-safe (immutable after construction).
 //
 // Several terms ("合同 2025", "src app"): each is in the name or, ranked
-// lower, in the name of a folder the item is in; at least one is in the name.
+// lower, in the name of a folder the item is in; at least one is in the
+// name. A single term keeps to the name: what lies inside a folder so
+// named does not match (the 文件夹 scope finds that folder itself).
 class NameMatcher {
 public:
     explicit NameMatcher(const ParsedQuery& query);

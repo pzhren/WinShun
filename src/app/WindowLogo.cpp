@@ -60,7 +60,8 @@ void WindowLogo::follow(Placement* placement)
 
 void WindowLogo::reveal()
 {
-    if (!m_window || !m_window->isVisible())
+    // Put away to the taskbar, the window is visible still: no logo over it.
+    if (!m_window || !m_window->isVisible() || (m_window->windowState() & Qt::WindowMinimized))
         return;
     m_shown = true;
     place();

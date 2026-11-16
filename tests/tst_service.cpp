@@ -906,7 +906,7 @@ private slots:
         }
         for (const std::uint32_t t : {0u, 1u, 2u, 3u, 5u}) {
             QVERIFY2(byTicket[t]->status == ntfs::BulkStatus::Data, qPrintable(u"ticket %1: status %2 reason %3"_s.arg(t)
-                .arg(static_cast<int>(byTicket[t]->status)).arg(ntfs::bulkSkipName(byTicket[t]->reason))));
+                .arg(static_cast<int>(byTicket[t]->status)).arg(QString::fromUtf8(ntfs::bulkSkipName(byTicket[t]->reason)))));
         }
         QCOMPARE(byTicket[0]->size, static_cast<std::uint64_t>(tiny.size()));
         QCOMPARE(byTicket[2]->size, static_cast<std::uint64_t>(large.size()));

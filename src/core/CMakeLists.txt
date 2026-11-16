@@ -33,6 +33,7 @@ qt_add_library(wscore STATIC
     Query.cpp Query.h
     Release.cpp Release.h
     SearchEngine.cpp SearchEngine.h
+    SearchHistory.cpp SearchHistory.h
     SearchTypes.h
     ServiceVolumeAccess.cpp ServiceVolumeAccess.h
     SettingsMatch.cpp SettingsMatch.h

@@ -159,7 +159,7 @@ SearchResults listTyped(const TypedPath& typed, bool foldersOnly, int max)
     };
     std::vector<Found> found;
     using Flag = QDirListing::IteratorFlag;
-    for (const QDirListing::DirEntry& entry : QDirListing(typed.folder, foldersOnly ? Flag::DirsOnly : Flag::ExcludeOther)) {
+    for (const QDirListing::DirEntry& entry : QDirListing(typed.folder, foldersOnly ? Flag::DirsOnly : Flag::ExcludeSpecial)) {
         SearchResult row;
         row.name = entry.fileName();
         row.path = prefix + row.name;

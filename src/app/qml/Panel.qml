@@ -40,6 +40,8 @@ Item {
     readonly property real pathX: nameX + 28 + Math.round((sizeX - 12 - nameX - 28) * 0.5)
 
     function onPixel(v) { return Math.round(v * Screen.devicePixelRatio) / Screen.devicePixelRatio }
+    // A single click only marks the row current; a double click opens it (rowClicked).
+    function currentRowRequested(index) { list.currentIndex = index }
 
     // Fades in as the window grows into it (the window is resized once;
     // the rows then come in over it).
@@ -574,6 +576,7 @@ Item {
                 itemY: panelRow.y
             }
             onClicked: (index, modifiers) => panel.rowClicked(index, modifiers)
+            onCurrentRequested: (index) => panel.currentRowRequested(index)
             onMenuRequested: (index, globalPos, modifiers) => panel.rowMenuRequested(index, globalPos, modifiers)
             onDragRequested: (index) => panel.rowDragRequested(index)
         }

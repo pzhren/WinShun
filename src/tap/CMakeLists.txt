@@ -9,8 +9,11 @@ add_library(WinShunTap SHARED
     WinShunTap.def
     TapProtocol.h
 )
-# C++/WinRT finds combase at run time: no windowsapp, no api-set imports.
-target_link_libraries(WinShunTap PRIVATE winshun_options kernel32 ole32 oleaut32 user32)
+# C++/WinRT (the SDK's cppwinrt) calls RoGetActivationFactory /
+# RoOriginateLanguageException directly and wants the imports: link the SDK's
+# windowsapp.lib. The symbols live in combase.dll, which Explorer has loaded,
+# so nothing extra is dragged in.
+target_link_libraries(WinShunTap PRIVATE winshun_options kernel32 ole32 oleaut32 user32 windowsapp)
 set_target_properties(WinShunTap PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
     PREFIX "")

@@ -116,10 +116,14 @@ struct Settings {
     // match | newest | oldest: how 文件 and 文件夹 order what they find, by
     // best match or by when last written (the footer's switch, remembered).
     QString sort = QStringLiteral("match");
-    // opened | modified | none: with nothing typed, what was opened last, or
-    // the files written last (the footer's switch, remembered), or nothing
+    // opened | modified | searched | none: with nothing typed, what was
+    // opened last, or the files written last (the footer's switch,
+    // remembered), or the queries searched last (SearchHistory), or nothing
     // but the favorites (GitHub #24: nothing of what was done shows).
     QString startList = QStringLiteral("opened");
+    // 自动清除最近搜索: the launcher's window hiding clears the queries
+    // searched last this many seconds after (0: they stay until cleared).
+    int searchClearSeconds = 30;
     // Each time the launcher opens, nothing is typed and the scope is 全部, as
     // at its first opening (GitHub #24); else it keeps the words, selected.
     bool clearOnOpen = false;
@@ -132,6 +136,20 @@ struct Settings {
     // or Seer when one is running in the background (FilePreview), else
     // Win顺's own preview window; builtin: always that.
     QString previewWith = QStringLiteral("auto");
+    // auto | libreoffice | office: which program turns an Office document into
+    // the PDF the preview pane draws (OfficeConvert). auto: LibreOffice when it
+    // is installed, the Office here otherwise.
+    QString previewOfficeEngine = QStringLiteral("auto");
+    // The preview, when always on, is drawn inside the launcher's window as
+    // the right-hand pane (a split view), not in a window of its own beside
+    // it. Off: the preview always-on pane is the separate window docked to
+    // the launcher's side.
+    bool previewEmbedded = true;
+    // The height the launcher's window was dragged to, and the width of the
+    // embedded preview pane, in the last session (0 = not set, let the content
+    // or the default size it).
+    double previewPaneHeight = 0;
+    double previewPaneWidth = 0;
 
     // [FileTypes]: what 文件 can be narrowed to, in the strip under the
     // search box (图片: jpg, png…), in its user's order. Written as an
@@ -150,9 +168,13 @@ struct Settings {
     QString taskbarIcon = QStringLiteral("color"); // color | mono: the tray's and the taskbar box's icon (monologo)
     QString uiSize = QStringLiteral("standard"); // compact | standard | roomy: type and row heights (uisize::)
     QString corners; // round | square: defaults() picks by Windows version
+    // 自定义背景: a picture of the user's own under the search box and the
+    // rows, as much of it as backgroundOpacity lets through. The path is kept
+    // as it is (the file is not copied): gone, the launcher is as it was.
+    QString backgroundImage;
+    int backgroundOpacity = 40; // 0…100: how strongly the picture shows through
 
     // [Update]
-    bool autoUpdate = true; // look for new versions on GitHub (see Updater)
 
     // [Backup]
     QString backupFolder; // where the settings are backed up (see Backup); empty: not
@@ -160,6 +182,7 @@ struct Settings {
     // [Index]
     QStringList excludedPaths;
     QStringList excludedNames;
+    QStringList excludedExtensions; // "tmp", no dot: files of these are never searched or indexed
     bool includeRemovableDrives = false;
     bool rescanOnStartup = true;
     // auto | service | direct | walk: where NTFS volumes are read from

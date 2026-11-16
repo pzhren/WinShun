@@ -9,7 +9,6 @@ Window {
 
     required property SettingsEditor editor
     required property WindowFrame frame
-    required property Updater updater
     required property Backup backup
 
     readonly property var renderers: ["software", "d3d11"]
@@ -28,7 +27,7 @@ Window {
         { title: qsTr("高级"), glyph: "" }, // Settings
         { title: qsTr("AI 助手"), glyph: "" }, // Robot
         { title: qsTr("插件"), glyph: "" }, // Puzzle
-        { title: Gleaning.title, gleaning: true } // the author's works, set apart at the bottom of the list
+        { title: Gleaning.title, gleaning: true } // the author's works: no button in the list (see navList)
     ]
     // Other names of each page, for the search; ";" between them. A word
     // here brings up the whole page, so never one of its options' words.
@@ -66,7 +65,7 @@ Window {
     readonly property int webPage: 5
     readonly property int favoritesPage: 6 // 收藏夹 (FavoritesSection)
     readonly property int clipboardPage: 7
-    readonly property int advancedPage: 8 // where the updates are
+    readonly property int advancedPage: 8 // 高级: the backups, the diagnostics, the plugins' details
     readonly property int aiPage: 9 // AI 助手: the MCP server (AiAccessSection, AiClientsSection, AiPrivacySection)
     readonly property int pluginsPage: 10 // 插件: 已安装 (PluginsSection), 开发者 (PluginDevSection)
     property int currentPage: 0
@@ -109,6 +108,7 @@ Window {
             editor.refreshNumberKeys()
             editor.refreshDoubleCtrlClash()
             editor.refreshOpusFolderMenu()
+            editor.refreshPreviewEngines() // LibreOffice may have been (un)installed meanwhile
         }
     }
 
@@ -209,8 +209,11 @@ Window {
     // ↓ goes to the categories.
     function moveCurrent(delta) {
         if (!searching) {
-            if (delta > 0)
-                navItemAt(currentPage).forceActiveFocus()
+            if (delta > 0) {
+                const item = navItemAt(currentPage)
+                if (item)
+                    item.forceActiveFocus()
+            }
             return
         }
         const list = results()
@@ -276,23 +279,22 @@ Window {
 
     Shortcut { // Ctrl+F: to the search box
         sequences: [StandardKey.Find]
-        enabled: !window.editor.recordingHotkey && !updateDialog.open && !pluginDialog.open && !webDialog.active
+        enabled: !window.editor.recordingHotkey && !pluginDialog.open && !webDialog.active
         onActivated: searchBox.focusAll()
     }
     Shortcut { // Ctrl+Tab, Ctrl+Shift+Tab: through the page's tabs
         sequences: [StandardKey.NextChild]
-        enabled: !window.searching && !window.warm && !window.editor.recordingHotkey && !updateDialog.open && !webDialog.active
+        enabled: !window.searching && !window.warm && !window.editor.recordingHotkey && !webDialog.active
         onActivated: window.cycleTab(1)
     }
     Shortcut {
         // Not StandardKey.PreviousChild: its Ctrl+Shift+Backtab never matches
         // on Windows (Qt 6.12), the written-out keys do.
         sequences: ["Ctrl+Shift+Tab"]
-        enabled: !window.searching && !window.warm && !window.editor.recordingHotkey && !updateDialog.open && !webDialog.active
+        enabled: !window.searching && !window.warm && !window.editor.recordingHotkey && !webDialog.active
         onActivated: window.cycleTab(-1)
     }
 
-    function showUpdateDialog() { updateDialog.show() } // App::showUpdate
     function showClipboardPage() { showPage(clipboardPage) } // App::showClipboardSettings
     function showWebPage() { showPage(webPage) } // App::showWebSettings
     function showFileTypesPage() { goTo(fileTypesRow) } // App::showFileTypeSettings: the launcher strip's +
@@ -375,7 +377,7 @@ Window {
     }
 
     function navItemAt(index) {
-        return index === gleaningPage ? gleaningNav : navItems.itemAt(index)
+        return navItems.itemAt(index) // null for 拾穗计划: it has no button
     }
 
     // Theme and language change everything at once; the old look fades out
@@ -449,7 +451,9 @@ Window {
 
             function select(to) {
                 window.showPage(to)
-                window.navItemAt(to).forceActiveFocus()
+                const item = window.navItemAt(to)
+                if (item)
+                    item.forceActiveFocus()
             }
 
             width: navList.width
@@ -590,23 +594,15 @@ Window {
                         delegate: NavItem {}
                     }
 
-                    Item { // sets 拾穗计划 apart from the settings
-                        width: 1
-                        height: 12
-                    }
-
-                    NavItem {
-                        id: gleaningNav
-                        index: window.gleaningPage
-                        modelData: window.pages[window.gleaningPage]
-                    }
+                    // 拾穗计划 is the author's own page, kept out of the list:
+                    // no button, no separator (the page itself is still built,
+                    // for the screenshots the preview tool takes of it).
                 }
 
                 Rectangle { // marks the current category, sliding between items as in Windows 11
                     visible: !window.warm && !window.searching // on the warm scene the item itself is filled
                     x: navList.x
-                    y: navList.y + (window.currentPage === window.gleaningPage ? gleaningNav.y
-                                    : window.currentPage * (navList.itemHeight + navList.spacing))
+                    y: navList.y + window.currentPage * (navList.itemHeight + navList.spacing)
                        + (navList.itemHeight - height) / 2
                     width: 3
                     height: 16
@@ -634,14 +630,8 @@ Window {
                 spacing: 5
 
                 Text {
-                    text: qsTr("Win顺 %1").arg(window.updater.currentVersion)
+                    text: qsTr("Win顺 %1").arg(Qt.application.version)
                     color: window.warm ? WarmPalette.inkSoft : Theme.faint
-                    font.pixelSize: Theme.fontCaption
-                }
-                Text {
-                    visible: window.updater.available
-                    text: qsTr("· 有新版本 %1").arg(window.updater.availableVersion)
-                    color: window.warm ? WarmPalette.ink : Theme.accent
                     font.pixelSize: Theme.fontCaption
                 }
             }
@@ -1690,7 +1680,7 @@ Window {
                 SettingRow {
                     title: qsTr("记住打开过的项目")
                     keywords: qsTr("历史;最近;记录;history;recent").split(";")
-                    description: qsTr("没输入时列出最近打开的项目，搜索时排在前面")
+                    description: qsTr("没输入时列出最近打开的项目，搜索时排在前面；搜过的词（最近搜索）也靠它记录，关掉后都不再记")
 
                     ToggleSwitch {
                         checked: window.editor.recordHistory
@@ -1702,7 +1692,7 @@ Window {
                     title: qsTr("清除最近使用记录")
                     keywords: qsTr("历史;最近;删除;清空;history").split(";")
                     description: window.editor.historyCount > 0
-                                 ? qsTr("共 %1 项；在搜索框里右键一项可以单独移除").arg(window.editor.historyCount)
+                                 ? qsTr("共 %1 项，搜过的词一并清除；在搜索框里右键一项可以单独移除").arg(window.editor.historyCount)
                                  : qsTr("没有记录")
 
                     FlatButton {
@@ -1790,6 +1780,56 @@ Window {
                 }
 
                 SettingRow {
+                    id: backgroundRow
+
+                    readonly property bool hasImage: window.editor.backgroundImage.length > 0
+                    readonly property string fileName: {
+                        const path = window.editor.backgroundImage
+                        return path.substring(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1)
+                    }
+
+                    title: qsTr("自定义背景")
+                    keywords: qsTr("壁纸;背景;底图;背景图;图片;照片;个性化;透明度;淡;浓;wallpaper;background;opacity").split(";")
+                    description: hasImage
+                                 ? qsTr("%1 · 铺在搜索框和结果列表下面，透明度越低文字越清楚").arg(fileName)
+                                 : qsTr("选一张图片铺在搜索框和结果列表下面，透明度随时可调")
+                    values: hasImage ? [fileName, window.editor.backgroundImage] : []
+                    bodyShown: hasImage
+
+                    FlatButton {
+                        text: backgroundRow.hasImage ? qsTr("更换图片") : qsTr("选择图片")
+                        glyph: "\uE8B9" // Picture
+                        onClicked: window.editor.chooseBackgroundImage()
+                    }
+
+                    FlatButton {
+                        visible: backgroundRow.hasImage
+                        text: qsTr("清除")
+                        onClicked: window.editor.backgroundImage = ""
+                    }
+
+                    body: Row {
+                        width: parent.width
+                        spacing: 14
+
+                        Text {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 52
+                            text: qsTr("透明度")
+                            color: Theme.text
+                            font.pixelSize: Theme.fontBody
+                        }
+
+                        PercentSlider {
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: Math.min(360, parent.width - 52 - 14)
+                            value: window.editor.backgroundOpacity
+                            onMoved: (value) => window.editor.backgroundOpacity = value
+                        }
+                    }
+                }
+
+                SettingRow {
                     title: qsTr("圆角", "appearance setting")
                     keywords: qsTr("圆角;直角;方角;尖角;Win10;Windows 10;win10风格;经典;corner;rounded;square").split(";")
                     description: qsTr("直角时窗口、菜单、按钮和输入框都不带圆角，和 Windows 10 一样")
@@ -1864,7 +1904,7 @@ Window {
                     title: qsTr("不搜索的文件夹")
                     keywords: qsTr("排除;忽略;隐藏;黑名单;exclude").split(";")
                     values: window.editor.excludedPaths
-                    description: qsTr("这些文件夹里的内容都不出现在结果里")
+                    description: qsTr("这些文件夹里的内容都不出现在结果里。全局生效：文件、文件夹、内容和各文件类型的搜索都不会列出它们；某个文件类型还可以在“结果列表 → 文件类型”里再叠加自己的排除路径")
 
                     FlatButton {
                         text: qsTr("添加文件夹")
@@ -1956,6 +1996,48 @@ Window {
                             }
                         }
                     }
+                }
+
+                SettingRow {
+                    id: excludedExtensionsRow
+                    title: qsTr("不搜索的扩展名")
+                    keywords: qsTr("排除;忽略;扩展名;后缀;文件类型;exclude;extension").split(";")
+                    values: window.editor.excludedExtensions
+                    description: qsTr("这些扩展名的文件不出现在任何搜索里：文件名、内容和各文件类型都不会列出它们。填 tmp、log 这样的后缀（点可省略），一次可填多个")
+
+                    body: [
+                        Flow {
+                            width: parent.width
+                            spacing: 6
+
+                            Repeater {
+                                model: window.editor.excludedExtensions
+
+                                delegate: Chip {
+                                    required property int index
+                                    required property string modelData
+                                    text: modelData
+                                    marked: excludedExtensionsRow.valueFound(modelData)
+                                    onRemoveClicked: window.editor.removeExcludedExtension(index)
+                                }
+                            }
+                        },
+                        Row {
+                            spacing: 8
+
+                            InputBox {
+                                id: excludeExtInput
+                                width: 240
+                                placeholder: qsTr("输入扩展名，例如 tmp 或 tmp log bak")
+                                onAccepted: if (window.editor.addExcludedExtension(text)) clear()
+                            }
+                            FlatButton {
+                                text: qsTr("添加")
+                                enabled: excludeExtInput.text.trim().length > 0
+                                onClicked: if (window.editor.addExcludedExtension(excludeExtInput.text)) excludeExtInput.clear()
+                            }
+                        }
+                    ]
                 }
             }
 
@@ -2382,14 +2464,27 @@ Window {
 
                 SettingRow {
                     title: qsTr("不输入时显示")
-                    keywords: qsTr("最近;最近打开;最近修改;最近使用;历史;recent").split(";")
-                    description: qsTr("打开搜索框还没输入时列出什么：最近打开的 5 项，或最近修改的文件（往下滚动接着列出）；底栏也能切换（Ctrl+S）。选“不显示”只列收藏")
+                    keywords: qsTr("最近;最近打开;最近修改;最近搜索;最近使用;历史;搜索记录;recent").split(";")
+                    description: qsTr("打开搜索框还没输入时列出什么：最近打开的 5 项、最近修改的文件（往下滚动接着列出），或搜过的词（回车再搜）；底栏也能切换（Ctrl+S）。选“不显示”只列收藏")
 
                     ScopeTabs {
-                        readonly property var lists: ["opened", "modified", "none"]
-                        labels: [qsTr("最近打开"), qsTr("最近修改"), qsTr("不显示")]
+                        readonly property var lists: ["opened", "modified", "searched", "none"]
+                        labels: [qsTr("最近打开"), qsTr("最近修改"), qsTr("最近搜索"), qsTr("不显示")]
                         current: Math.max(0, lists.indexOf(window.editor.startList))
                         onActivated: (index) => window.editor.startList = lists[index]
+                    }
+                }
+
+                SettingRow {
+                    title: qsTr("自动清除最近搜索")
+                    keywords: qsTr("最近搜索;清除;删除;隐私;秒;定时;自动;搜索记录;clear;privacy").split(";")
+                    description: qsTr("只对“最近搜索”生效：窗口收起后过这么久，或停在最近搜索列表上闲置这么久，搜过的词就从记录里删掉（正在输入搜索的不受影响）。选“不清除”一直留着，可在“记住打开过的项目”旁的清除按钮清空")
+
+                    ScopeTabs {
+                        readonly property var choices: [0, 10, 30, 60, 300]
+                        labels: [qsTr("不清除"), qsTr("10 秒"), qsTr("30 秒"), qsTr("1 分钟"), qsTr("5 分钟")]
+                        current: Math.max(0, choices.indexOf(window.editor.searchClearSeconds))
+                        onActivated: (index) => window.editor.searchClearSeconds = choices[index]
                     }
                 }
 
@@ -2426,6 +2521,74 @@ Window {
                         labels: [qsTr("自动"), qsTr("内置")]
                         current: window.editor.previewWith === "builtin" ? 1 : 0
                         onActivated: (index) => window.editor.previewWith = ["auto", "builtin"][index]
+                    }
+                }
+
+                SettingRow {
+                    title: qsTr("预览嵌入右侧")
+                    keywords: qsTr("预览;内嵌;嵌入;右侧;同窗;split;embed;pane;分栏").split(";")
+                    description: qsTr("预览直接画在结果列表右边的同一个窗口里（左结果、右预览一条竖线分开）；关掉则预览是停在启动器旁边的独立窗口")
+
+                    ToggleSwitch {
+                        checked: window.editor.previewEmbedded
+                        onToggled: (on) => window.editor.previewEmbedded = on
+                    }
+                }
+
+                SettingRow {
+                    id: officeRow
+                    title: qsTr("Office 文档怎么预览")
+                    keywords: qsTr("Office;Word;Excel;PowerPoint;PPT;docx;xlsx;pptx;LibreOffice;引擎;转换;预览;preview;engine").split(";")
+                    description: {
+                        if (!window.editor.libreOfficeInstalled && !window.editor.officeInstalled)
+                            return qsTr("这台电脑还没有能把文档转成 PDF 的程序：Word / Excel / PowerPoint 只能显示文字版，doc / xls / ppt 这些老格式连内容都看不到。装一个 LibreOffice（免费，约 700 MB），或者把它交给这台电脑上已有的 Office。")
+                        if (window.editor.officeEngine === "office")
+                            return window.editor.officeInstalled
+                                 ? qsTr("用这台电脑装的 Office 转 PDF：版式和分页与 Word / Excel / PPT 完全一致（Word 说了算）；代价是每个没转过的新文件要等 Office 启动十几秒，转换时会短暂拉起 Office 进程")
+                                 : qsTr("Office 没有装，改用 LibreOffice")
+                        if (window.editor.officeEngine === "libreoffice")
+                            return window.editor.libreOfficeInstalled
+                                 ? qsTr("用 LibreOffice 转 PDF：快，几秒一个文件，在后台无头运行，不碰你正开着的 Office；缺点是缺字体时用替代字形，个别文档的分页和 Word 略有出入")
+                                 : qsTr("LibreOffice 没有装，现在用这台电脑上的 Office 转")
+                        return window.editor.libreOfficeInstalled
+                             ? qsTr("自动：优先 LibreOffice（快、不打扰你开着的 Office，但缺字体时分页偶有出入）；它不在时用 Office（版式分页最准，但每个新文件首次要等十几秒）")
+                             : qsTr("自动：这台电脑没有 LibreOffice，用 Office 转成 PDF")
+                    }
+
+                    ScopeTabs {
+                        labels: [qsTr("自动"), qsTr("LibreOffice"), qsTr("Office")]
+                        current: Math.max(0, ["auto", "libreoffice", "office"].indexOf(window.editor.officeEngine))
+                        onActivated: (index) => window.editor.officeEngine = ["auto", "libreoffice", "office"][index]
+                    }
+                }
+
+                SettingRow {
+                    id: installRow
+                    shown: !window.editor.libreOfficeInstalled
+                    title: qsTr("安装 LibreOffice")
+                    keywords: qsTr("安装;LibreOffice;下载;Office;预览;preview;install;download").split(";")
+                    description: installRow.installing
+                                 ? qsTr("安装程序已经在后台跑起来了，装好之后这一行会自己消失；没装成的话可以再点一次")
+                                 : qsTr("免费的开源 Office，装好后 Word / Excel / PowerPoint 按原版式预览（约 700 MB，从官网下载）")
+
+                    property bool installing: false
+
+                    FlatButton {
+                        text: installRow.installing ? qsTr("安装中…") : qsTr("安装")
+                        glyph: "" // Download
+                        highlighted: !installRow.installing
+                        onClicked: {
+                            installRow.installing = true
+                            window.editor.installLibreOffice()
+                        }
+                    }
+
+                    Connections {
+                        target: window.editor
+                        function onPreviewEnginesChanged() {
+                            if (window.editor.libreOfficeInstalled)
+                                installRow.installing = false
+                        }
                     }
                 }
             }
@@ -2494,13 +2657,15 @@ Window {
                     id: fileTypesRow
 
                     property string problem // what was wrong with the last change
-                    // The rest of a line after the name, then ↑ ↓ and delete (or 添加).
-                    readonly property int extensionsWidth: Math.max(160, typeRows.width - 120 - 3 * 32 - 4 * 6)
+                    // The rest of a line after the name, then 排除路径 ↑ ↓ and delete (or 添加).
+                    readonly property int extensionsWidth: Math.max(160, typeRows.width - 120 - 4 * 32 - 5 * 6)
 
                     title: qsTr("文件类型")
                     keywords: qsTr("类型;扩展名;后缀;筛选;图片;文档;视频;音乐;压缩包;filter;type;extension").split(";")
                     values: window.editor.fileTypes.map(t => t.name)
-                    description: qsTr("“文件”里搜索框下面的一排，按 Ctrl+Tab 切换；每个类型是一组扩展名，用空格或逗号隔开")
+                    description: qsTr("“文件”里搜索框下面的一排，按 Ctrl+Tab 切换；每个类型是一组扩展名，用空格或逗号隔开。每个类型还可以设自己的排除路径，叠在“搜索范围”的全局排除之上")
+
+                    property int expandedType: -1 // the type whose excluded folders are shown
 
                     FlatButton {
                         visible: !window.editor.fileTypesDefault
@@ -2520,61 +2685,132 @@ Window {
                             Repeater {
                                 model: window.editor.fileTypes
 
-                                delegate: Row { // its name, its extensions, then up, down and remove
-                                    id: typeRow
+                                delegate: Column { // its row (name, extensions, excluded, ↑ ↓, delete), then its excluded folders
+                                    id: typeDelegate
 
                                     required property int index
                                     required property var modelData
 
+                                    width: parent.width
                                     spacing: 6
 
-                                    InputBox {
-                                        id: typeName
-                                        width: 120
-                                        text: typeRow.modelData.name
-                                        onEditingFinished: {
-                                            fileTypesRow.problem = window.editor.renameFileType(typeRow.index, text)
-                                            if (fileTypesRow.problem.length > 0)
-                                                text = typeRow.modelData.name
+                                    Row {
+                                        id: typeRow
+
+                                        spacing: 6
+
+                                        InputBox {
+                                            id: typeName
+                                            width: 120
+                                            text: typeDelegate.modelData.name
+                                            onEditingFinished: {
+                                                fileTypesRow.problem = window.editor.renameFileType(typeDelegate.index, text)
+                                                if (fileTypesRow.problem.length > 0)
+                                                    text = typeDelegate.modelData.name
+                                            }
+                                        }
+                                        InputBox {
+                                            id: typeExtensions
+                                            width: fileTypesRow.extensionsWidth
+                                            text: typeDelegate.modelData.extensions.join(" ")
+                                            onEditingFinished: {
+                                                fileTypesRow.problem = window.editor.setFileTypeExtensions(typeDelegate.index, text)
+                                                if (fileTypesRow.problem.length > 0)
+                                                    text = typeDelegate.modelData.extensions.join(" ")
+                                            }
+                                        }
+                                        FlatButton {
+                                            flat: true
+                                            glyph: typeDelegate.excluded.length > 0 ? "\uE72C" : "\uE8DA" // Filter; OpenFolder
+                                            highlighted: fileTypesRow.expandedType === typeDelegate.index
+                                            Accessible.name: qsTr("排除路径")
+                                            onClicked: fileTypesRow.expandedType
+                                                = fileTypesRow.expandedType === typeDelegate.index ? -1 : typeDelegate.index
+                                        }
+                                        FlatButton {
+                                            flat: true
+                                            glyph: "\uE70E" // ChevronUp
+                                            enabled: typeDelegate.index > 0
+                                            Accessible.name: qsTr("上移")
+                                            onClicked: {
+                                                fileTypesRow.problem = ""
+                                                window.editor.moveFileType(typeDelegate.index, -1)
+                                            }
+                                        }
+                                        FlatButton {
+                                            flat: true
+                                            glyph: "\uE70D" // ChevronDown
+                                            enabled: typeDelegate.index < window.editor.fileTypes.length - 1
+                                            Accessible.name: qsTr("下移")
+                                            onClicked: {
+                                                fileTypesRow.problem = ""
+                                                window.editor.moveFileType(typeDelegate.index, 1)
+                                            }
+                                        }
+                                        FlatButton {
+                                            flat: true
+                                            glyph: "\uE74D" // Delete
+                                            Accessible.name: qsTr("删除")
+                                            onClicked: {
+                                                fileTypesRow.problem = ""
+                                                window.editor.removeFileType(typeDelegate.index)
+                                            }
                                         }
                                     }
-                                    InputBox {
-                                        id: typeExtensions
-                                        width: fileTypesRow.extensionsWidth
-                                        text: typeRow.modelData.extensions.join(" ")
-                                        onEditingFinished: {
-                                            fileTypesRow.problem = window.editor.setFileTypeExtensions(typeRow.index, text)
-                                            if (fileTypesRow.problem.length > 0)
-                                                text = typeRow.modelData.extensions.join(" ")
+
+                                    // The type's own excluded folders (its row's 排除路径 button shows them).
+                                    property var excluded: window.editor.fileTypeExcludedFolders(typeDelegate.index)
+
+                                    Column {
+                                        visible: fileTypesRow.expandedType === typeDelegate.index
+                                        width: parent.width
+                                        spacing: 6
+
+                                        Repeater {
+                                            model: typeDelegate.excluded
+
+                                            delegate: Row {
+                                                required property int index
+                                                required property string modelData
+
+                                                spacing: 6
+                                                width: parent.width
+
+                                                Item { width: 120; height: 1 } // under the type's name
+                                                Text {
+                                                    width: parent.width - 120 - 32 - 6
+                                                    text: modelData
+                                                    elide: Text.ElideMiddle
+                                                    font.pixelSize: Theme.fontBody
+                                                    color: Theme.subtext
+                                                }
+                                                FlatButton {
+                                                    flat: true
+                                                    glyph: "\uE74D" // Delete
+                                                    Accessible.name: qsTr("移除")
+                                                    onClicked: {
+                                                        window.editor.removeFileTypeExcludedFolder(typeDelegate.index, index)
+                                                        typeDelegate.excluded = window.editor.fileTypeExcludedFolders(typeDelegate.index)
+                                                    }
+                                                }
+                                            }
                                         }
-                                    }
-                                    FlatButton {
-                                        flat: true
-                                        glyph: "\uE70E" // ChevronUp
-                                        enabled: typeRow.index > 0
-                                        Accessible.name: qsTr("上移")
-                                        onClicked: {
-                                            fileTypesRow.problem = ""
-                                            window.editor.moveFileType(typeRow.index, -1)
-                                        }
-                                    }
-                                    FlatButton {
-                                        flat: true
-                                        glyph: "\uE70D" // ChevronDown
-                                        enabled: typeRow.index < window.editor.fileTypes.length - 1
-                                        Accessible.name: qsTr("下移")
-                                        onClicked: {
-                                            fileTypesRow.problem = ""
-                                            window.editor.moveFileType(typeRow.index, 1)
-                                        }
-                                    }
-                                    FlatButton {
-                                        flat: true
-                                        glyph: "\uE74D" // Delete
-                                        Accessible.name: qsTr("删除")
-                                        onClicked: {
-                                            fileTypesRow.problem = ""
-                                            window.editor.removeFileType(typeRow.index)
+                                        Row {
+                                            spacing: 6
+                                            Item { width: 120; height: 1 } // under the type's name
+                                            FlatButton {
+                                                text: qsTr("添加文件夹")
+                                                onClicked: {
+                                                    window.editor.addFileTypeExcludedFolder(typeDelegate.index)
+                                                    typeDelegate.excluded = window.editor.fileTypeExcludedFolders(typeDelegate.index)
+                                                }
+                                            }
+                                            Text {
+                                                visible: typeDelegate.excluded.length === 0
+                                                text: qsTr("这类文件不出现在这些文件夹里（叠在全局排除之上）")
+                                                font.pixelSize: Theme.fontCaption
+                                                color: Theme.subtext
+                                            }
                                         }
                                     }
                                 }
@@ -2597,7 +2833,7 @@ Window {
                             }
                             FlatButton {
                                 id: addType
-                                width: 3 * 32 + 2 * 6 // under ↑ ↓ and delete
+                                width: 4 * 32 + 3 * 6 // under 排除路径, ↑ ↓ and delete
                                 text: qsTr("添加")
                                 enabled: newTypeName.text.trim().length > 0
                                 onClicked: {
@@ -3346,49 +3582,6 @@ Window {
             SettingsSection {
                 page: window.advancedPage
                 width: parent.width
-                title: qsTr("更新")
-                note: qsTr("检查更新只访问 GitHub，不发送任何个人信息。")
-
-                SettingRow {
-                    title: qsTr("版本 %1").arg(window.updater.currentVersion)
-                    keywords: qsTr("升级;新版本;version;update").split(";")
-                    description: window.updater.checking ? qsTr("正在检查更新…")
-                               : window.updater.available ? qsTr("有新版本 %1").arg(window.updater.availableVersion)
-                               : window.updater.problem.length > 0 ? window.updater.problem
-                               : !isNaN(window.updater.lastChecked.getTime())
-                                 ? qsTr("已是最新版本 · %1检查").arg(window.sinceText(window.updater.lastChecked))
-                               : ""
-
-                    FlatButton {
-                        visible: !window.updater.available
-                        enabled: !window.updater.checking
-                        text: qsTr("检查更新")
-                        glyph: "\uE895" // Sync
-                        onClicked: window.updater.check(true)
-                    }
-                    FlatButton {
-                        visible: window.updater.available
-                        highlighted: true
-                        text: qsTr("查看 %1").arg(window.updater.availableVersion)
-                        onClicked: window.showUpdateDialog()
-                    }
-                }
-
-                SettingRow {
-                    title: qsTr("自动检查更新")
-                    keywords: qsTr("升级;新版本;update").split(";")
-                    description: qsTr("启动时和每隔 12 小时检查一次，有新版本时在托盘提示")
-
-                    ToggleSwitch {
-                        checked: window.editor.autoUpdate
-                        onToggled: (on) => window.editor.autoUpdate = on
-                    }
-                }
-            }
-
-            SettingsSection {
-                page: window.advancedPage
-                width: parent.width
                 title: qsTr("备份")
                 note: qsTr("备份设置、收藏夹和添加的插件，不含索引和历史记录。选同步盘里的文件夹（OneDrive、坚果云，或用 alist、RaiDrive 挂载的 WebDAV 盘），备份就跟着同步到云上。")
 
@@ -3681,17 +3874,6 @@ Window {
             }
             onFinished: webSection.closeForm()
         }
-    }
-
-    UpdateDialog {
-        id: updateDialog
-        z: 1
-        anchors.left: parent.left
-        anchors.right: parent.right
-        anchors.top: titleBar.bottom // the title bar keeps working
-        anchors.bottom: parent.bottom
-        updater: window.updater
-        icon: window.frame.icon
     }
 
     PluginDialog { // the 插件 page's questions: permissions, versions, removal

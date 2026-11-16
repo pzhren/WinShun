@@ -77,7 +77,7 @@ std::vector<Notation> notations(const QColor& color)
     const QColor rgb = color.toRgb();
     QString hex = rgb.name().toUpper();
     if (alpha)
-        hex += u"%1"_s.arg(rgb.alpha(), 2, 16, u'0').toUpper();
+        hex += u"%1"_s.arg(rgb.alpha(), 2, 16, QChar(u'0')).toUpper();
     const QString channels = u"%1, %2, %3"_s.arg(rgb.red()).arg(rgb.green()).arg(rgb.blue());
     const QColor hsl = color.toHsl();
     const QString hslChannels = u"%1, %2%, %3%"_s.arg(std::max(0, hsl.hslHue()))

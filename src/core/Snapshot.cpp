@@ -402,11 +402,12 @@ private:
     std::uint32_t m_count = 0;
 };
 
-// The four lists of CrawlRules, in a fixed order.
+// The five lists of CrawlRules, in a fixed order.
 template <typename Rules, typename F> void forEachList(Rules& rules, F&& f)
 {
     f(rules.excludedPaths);
     f(rules.excludedNames);
+    f(rules.excludedExtensions);
     f(rules.lowPriorityPaths);
     f(rules.lowPriorityNames);
 }

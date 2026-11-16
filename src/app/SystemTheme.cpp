@@ -75,6 +75,18 @@ void SystemTheme::setUiSize(const QString& size)
         emit s_instance->uiSizeChanged();
 }
 
+void SystemTheme::setBackground(const QString& path, int opacityPercent)
+{
+    const QUrl image = path.isEmpty() ? QUrl() : QUrl::fromLocalFile(path);
+    const qreal opacity = std::clamp(opacityPercent, 0, 100) / 100.0;
+    if (s_backgroundImage == image && s_backgroundOpacity == opacity)
+        return;
+    s_backgroundImage = image;
+    s_backgroundOpacity = opacity;
+    if (s_instance)
+        emit s_instance->backgroundChanged();
+}
+
 bool SystemTheme::dark() const
 {
     return QGuiApplication::styleHints()->colorScheme() == Qt::ColorScheme::Dark;

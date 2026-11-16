@@ -10,6 +10,9 @@ QtObject {
     // them are translucent then, with the fill colours WinUI uses there; over
     // a plain background they keep their solid colours.
     readonly property bool backdrop: SystemTheme.backdrop
+    // A custom picture lies under the launcher (设置 > 外观): the chosen
+    // pills on it turn translucent, so they do not glare on the photograph.
+    readonly property bool picture: SystemTheme.backgroundImage.toString().length > 0
     // For text, glyphs and lines: lightened on dark to read there.
     readonly property color accent: dark ? Qt.lighter(SystemTheme.accent, 1.55) : SystemTheme.accent
     // For fills under white words or marks (accentText): deep enough for
@@ -49,7 +52,8 @@ QtObject {
 
     readonly property color track: backdrop ? (dark ? Qt.rgba(1, 1, 1, 0.045) : Qt.rgba(0, 0, 0, 0.05))
                                             : dark ? "#2A2A2A" : "#EDEDED"
-    readonly property color chipActive: dark ? "#3A3A3A" : "#FFFFFF"
+    readonly property color chipActive: picture ? (dark ? Qt.rgba(1, 1, 1, 0.14) : Qt.rgba(1, 1, 1, 0.72))
+                                                : dark ? "#3A3A3A" : "#FFFFFF"
     readonly property color chipHover: dark ? "#333333" : "#E4E4E4"
     readonly property color chipBorder: dark ? "#454545" : "#DCDCDC"
     readonly property color keycap: dark ? "#2A2A2A" : "#FFFFFF"

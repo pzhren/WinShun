@@ -46,6 +46,9 @@ struct FileType {
     QString name; // empty for a built-in one not renamed: named in the language shown (by id)
     QList<QString> extensions; // without the dot, lower case
     QString id; // a built-in one's ("pictures"); empty for its user's own
+    // 排除路径: folders this kind of file is never found under (搜索范围's
+    // exclusions come first, globally). Kept as written (%VARS% allowed).
+    QList<QString> excludedPaths;
     bool operator==(const FileType&) const = default;
 };
 using FileTypes = QList<FileType>;

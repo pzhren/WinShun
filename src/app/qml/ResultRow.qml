@@ -84,6 +84,7 @@ Item {
     property bool deleteArmed: false // first click on delete; the second one deletes
 
     signal clicked(int index, int modifiers)
+    signal currentRequested(int index)
     signal menuRequested(int index, point globalPos, int modifiers) // with Shift: the system's menu
     signal actionRequested(int index, int action)
     signal dragRequested(int index) // its file or folder dragged out of the window
@@ -372,7 +373,16 @@ Item {
                 return
             if (mouse.button === Qt.RightButton)
                 row.menuRequested(row.index, area.mapToGlobal(mouse.x, mouse.y), mouse.modifiers)
+            else if (mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier))
+                row.clicked(row.index, mouse.modifiers) // Ctrl toggles, Shift selects: on one click
             else
+                row.currentRequested(row.index) // a plain click only marks the row; a double one opens
+        }
+        // A plain double click opens the row (a single click only marks it current).
+        onDoubleClicked: (mouse) => {
+            if (draggedOut) // the release that ended a drag out
+                return
+            if (mouse.button === Qt.LeftButton && !(mouse.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)))
                 row.clicked(row.index, mouse.modifiers)
         }
 
@@ -400,13 +410,6 @@ Item {
                 tip: row.packagedApp ? qsTr("打开安装文件夹") : qsTr("打开所在位置")
                 tipShortcut: "Ctrl+Enter"
                 onClicked: row.actionRequested(row.index, Launcher.Reveal)
-            }
-            RowAction {
-                id: terminalAction
-                visible: !row.isApp // a file's or folder's: its folder in cmd
-                glyph: "" // CommandPrompt
-                tip: qsTr("在终端中打开")
-                onClicked: row.actionRequested(row.index, Launcher.OpenTerminal)
             }
             RowAction {
                 id: copyAction
@@ -450,7 +453,6 @@ Item {
     HoverTip {
         readonly property RowAction hovered: adminAction.tipWanted ? adminAction
                                            : revealAction.tipWanted ? revealAction
-                                           : terminalAction.tipWanted ? terminalAction
                                            : copyAction.tipWanted ? copyAction
                                            : copyPathAction.tipWanted ? copyPathAction
                                            : deleteAction.tipWanted ? deleteAction : null

@@ -146,6 +146,18 @@ bool matchesNameRule(std::wstring_view rule, std::wstring_view fullPath, std::ws
                                                        : endsWithTail(fullPath, rule);
 }
 
+// The name's extension ("tmp" of "a.b.tmp") equals the rule ("tmp", no dot,
+// both sides any case).
+bool matchesExtensionRule(std::string_view name, const std::wstring& rule)
+{
+    const std::size_t dot = name.find_last_of('.');
+    if (dot == std::string_view::npos || dot + 1 == name.size())
+        return false;
+    std::u16string decoded;
+    wtf8::decodeAppend(decoded, name.substr(dot + 1));
+    return win32::equalsIgnoreCase(wtf8::wview(decoded), rule);
+}
+
 } // namespace
 
 bool Crawler::isExcludedDir(std::wstring_view fullPath, std::wstring_view name) const
@@ -226,6 +238,9 @@ void Crawler::addToListing(DirListing& out, const Root& dir, std::string_view na
         flags |= dirPriorityFlags(out.scratchPath, wideName);
     } else {
         descend = false;
+        for (const auto& e : m_rules.excludedExtensions)
+            if (matchesExtensionRule(name, e))
+                return; // a file of an excluded extension is never indexed
     }
     const auto offset = static_cast<std::uint32_t>(out.names.size());
     if (name.empty())

@@ -7,3 +7,8 @@ CMakeUserPresets.json
 *.user
 __pycache__/
 /tools/screenshots/work/
+Testing/
+.workbuddy/
+measure/
+*.log
+.log

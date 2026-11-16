@@ -43,6 +43,7 @@ class FilePreview;
 class FolderMenu;
 class SystemCatalog;
 class History;
+class SearchHistory;
 class IndexService;
 class IdleTrim;
 class KeyListener;
@@ -54,7 +55,6 @@ class Placement;
 class SearchEngine;
 class SettingsEditor;
 class TypeToSearch;
-class Updater;
 class Backup;
 class VolumeNotifier;
 class WindowFrame;
@@ -121,7 +121,6 @@ public:
     void dumpLauncher(const QString& file) const;
     void showClipboard();
     void showSettings();
-    void showUpdate(); // the settings window with the update dialog
     // Set by "重新启动" in the tray menu or the settings window: the command
     // line for the new copy, which main() starts once this one has let go,
     // and what it runs with: as this one, as administrator (UAC asks once:
@@ -246,6 +245,14 @@ private:
     void revealLauncher(); // slides in (Placement::slideIn) unless it went away meanwhile
     void finishHidingLauncher(); // slid out (Placement::slideOut), or at once
     bool launcherShown() const; // up, and not on its way out
+    // Put away to its button on the taskbar (minimized): not hidden, so the
+    // button stays there to press. `isVisible()` is true of it, which is why
+    // everything that asks whether the user can see the launcher asks this.
+    bool launcherMinimized() const;
+    void minimizeLauncher(); // put away there (finishHidingLauncher)
+    void settleLauncherAway(); // what going away leaves behind, slid out or put away
+    void putAwayLauncher(); // ... at once, its button pressed while it is up
+    void reopenLauncher(); // its button pressed: back up, as showLauncher opens it
     void prewarmLauncher();
     void finishPrewarm();
     void refreshContentIndexStatus(); // shown in the settings window
@@ -282,6 +289,7 @@ private:
 
     Settings m_settings;
     std::unique_ptr<History> m_history;
+    std::unique_ptr<SearchHistory> m_searchHistory; // the queries searched last (最近搜索)
     std::unique_ptr<Favorites> m_favorites; // the launcher's and the dialog bar's
     std::unique_ptr<IndexService> m_index;
     // The index service (GitHub #21): wanted by the mode, so looked for
@@ -342,6 +350,10 @@ private:
     QElapsedTimer m_launcherHidden; // since the launcher last went away
     QElapsedTimer m_launcherShown; // since it was last asked for
     bool m_launcherClosing = false; // sliding out (hideLauncher)
+    // Put away to the taskbar (minimized), not hidden: the button is there to
+    // press. Set before the window is minimized, so that the state change it
+    // reports is not taken for the user putting it away.
+    bool m_launcherPutAway = false;
     std::unique_ptr<ComWorker> m_typingWorker; // asks Explorer its folder (explorerTyped); before m_typing
     std::unique_ptr<TypeToSearch> m_typing; // while [Taskbar] StartMenuTyping or [Launcher] ExplorerTyping is on
     HWND m_typingExplorer = nullptr; // the launcher is up from typing in this Explorer window: Esc goes back to it
@@ -362,14 +374,23 @@ private:
     // Pinned (Launcher::pinned), it lost the focus to a press on the box:
     // that press closes it (searchBoxPressed). Since when.
     QElapsedTimer m_pinnedLostToBox;
+    // Since the focus last went to the taskbar (a press anywhere on it). The
+    // press on the launcher's own button that puts it away may be followed by
+    // Explorer restoring it (visibilityChanged): that restoration is part of
+    // the same press, not a press that brings it back.
+    QElapsedTimer m_taskbarPress;
+    // Since the launcher last went to its button (settleLauncherAway). The
+    // same press may put it there and, Explorer deciding only afterwards
+    // whether the press activates or minimizes, bring it back at once — the
+    // deactivation that marks m_taskbarPress may not even have been heard of
+    // by then. Either mark is enough to keep that restoration spent.
+    QElapsedTimer m_putAwayAt;
     QPointer<QQuickItem> m_searchField; // the launcher's (SearchBar.qml): the input method asks it where the caret is
     taskbar::SearchBox::Text m_fieldShown; // what it last reported (mirrorField), for the box
     bool m_deliverTyping = false; // the launcher was asked for by typing in the Start menu or in Explorer
     QString m_clipboardShortcut; // what opens the clipboard: "Win+V", another shortcut, or nothing
     std::unique_ptr<MessageWindow> m_messages;
-    std::unique_ptr<Updater> m_updater;
     std::unique_ptr<Backup> m_backup; // of the settings, into a folder chosen
-    bool m_updateNotified = false; // the last tray notification announced a new version
     std::unique_ptr<VolumeNotifier> m_volumeNotifier; // after m_messages, whose window it uses
     std::unique_ptr<NetworkNotifier> m_network; // after m_index, whose shares it tells
     std::unique_ptr<IdleTrim> m_idleTrim; // gives the memory back while nothing is in use
