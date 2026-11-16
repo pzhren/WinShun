@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/pzhren-ux/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/LingCore/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
+  <a href="https://github.com/pzhren/WinShun/releases/latest"><img src="https://img.shields.io/github/v/release/pzhren/WinShun?label=%E4%B8%8B%E8%BD%BD%20Download" alt="Download"></a>
   <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4" alt="Windows 10 | 11">
   <img src="https://img.shields.io/badge/x64-64--bit-blue" alt="x64">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT"></a>
@@ -252,7 +252,7 @@ This repository is modified from [LingCore/WinShun](https://github.com/LingCore/
 
 ### 下载安装
 
-1. 到 [Releases 页面](https://github.com/pzhren-ux/WinShun/releases/latest) 下载 `WinShun-版本号-x64-setup.exe`，双击安装。Windows 提示“已保护你的电脑”时，点 **更多信息 → 仍要运行**（还没有代码签名证书）。
+1. 到 [Releases 页面](https://github.com/pzhren/WinShun/releases/latest) 下载 `WinShun-版本号-x64-setup.exe`，双击安装。Windows 提示“已保护你的电脑”时，点 **更多信息 → 仍要运行**（还没有代码签名证书）。
 2. 装完托盘里出现 Win顺 的图标，索引几秒就建好。连按两下 Ctrl 开始搜索。
 3. 升级时运行新的安装程序，设置和索引都保留。卸载在 Windows 的“设置 → 应用”里。
 
@@ -292,7 +292,7 @@ Listary、PowerToys 的“查找鼠标”默认也用双击 Ctrl，关掉其中�
 
 ### 反馈
 
-遇到问题或有建议，欢迎在 [Issues](https://github.com/pzhren-ux/WinShun/issues) 里提出。
+遇到问题或有建议，欢迎在 [Issues](https://github.com/pzhren/WinShun/issues) 里提出。
 
 ### 从源码编译
 
@@ -404,7 +404,7 @@ It reads the NTFS master file table (MFT) directly, indexing three million files
 
 ### Download and install
 
-1. Download `WinShun-<version>-x64-setup.exe` from the [Releases page](https://github.com/pzhren-ux/WinShun/releases/latest) and run it. If Windows says “Windows protected your PC”, click **More info → Run anyway**: the app is not code-signed yet.
+1. Download `WinShun-<version>-x64-setup.exe` from the [Releases page](https://github.com/pzhren/WinShun/releases/latest) and run it. If Windows says “Windows protected your PC”, click **More info → Run anyway**: the app is not code-signed yet.
 2. When the WinShun icon appears in the notification area, it is running; the first index takes a few seconds. Press Ctrl twice and type.
 3. To upgrade, run a newer installer: your settings and index are kept. Uninstall from Windows Settings → Apps.
 
@@ -444,7 +444,7 @@ Free and MIT-licensed. It goes online only to check GitHub for new versions (you
 
 ### Feedback
 
-Bug reports and suggestions are welcome in [Issues](https://github.com/pzhren-ux/WinShun/issues).
+Bug reports and suggestions are welcome in [Issues](https://github.com/pzhren/WinShun/issues).
 
 ### Build from source
 
