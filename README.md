@@ -26,10 +26,6 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/cover.jpg" width="640" alt="Win顺 WinShun：让你的电脑更好用，11 合 1，双击 Ctrl 全搞定，免费开源 / a free Windows search launcher, eleven tools in one, press Ctrl twice">
-</p>
-
-<p align="center">
   拼音秒搜文件 · 文件内容全文搜索（Word / Excel / PPT / PDF） · 应用和系统设置 · 网页搜索 · 收藏夹 · 插件<br>
   “打开 / 另存为”对话框搜索 · 剪贴板历史（代替 Win+V，图片文字也能搜） · 任务栏搜索框 · AI 助手 MCP<br>
   <sub>Pinyin file search · full-text search in documents · apps and settings · web search · favorites · plugins · file dialog search · clipboard history with OCR · taskbar search box · MCP server for AI assistants</sub>
@@ -41,29 +37,24 @@
 
 ## 截图 · Screenshots
 
+本仓库修改版的实际运行截图；演示用的样例文档在 `tools/screenshots/demo/`（沿用上游，数据都是虚构的）。Real screenshots of this fork; the sample documents under `tools/screenshots/demo/` come from upstream, all data in them is fictional. 原版功能的老宣传图见 [上游仓库](https://github.com/LingCore/WinShun)。
+
 <p align="center">
-  <img src="docs/images/search.jpg" width="49%" alt="打拼音首字母秒找文件：ndbg 找到年度报告 / pinyin initials ndbg find 年度报告">
-  <img src="docs/images/numbers.jpg" width="49%" alt="图标上的序号，Ctrl+1～9 直接打开 / row numbers on the icons, Ctrl+1–9 opens a row">
-  <img src="docs/images/newest.jpg" width="49%" alt="按修改时间排序，找最新的那一版 / sort by date modified, newest first">
-  <img src="docs/images/panel.jpg" width="49%" alt="搜索面板：Ctrl+E 展开，左边筛选，右边分列排序 / search panel: Ctrl+E for filters and sortable columns">
-  <img src="docs/images/preview.jpg" width="49%" alt="Alt+P 预览文件，启动器不关 / Alt+P previews a file beside the launcher">
-  <img src="docs/images/content.jpg" width="49%" alt="文件内容全文搜索：Word、Excel、PPT、PDF、代码 / full-text search inside documents and code">
-  <img src="docs/images/folder.jpg" width="49%" alt="只搜一个文件夹里的字：第三季度销售额 财务/ / content search in one folder: words, then folder/">
-  <img src="docs/images/semantic.jpg" width="49%" alt="按意思找：? 去年报销的规定 找到差旅费用管理办法 / search by meaning: find documents by what they are about">
-  <img src="docs/images/foldermenu.jpg" width="49%" alt="资源管理器里双击空白处：收藏、最近、开着的文件夹 / double-click empty space in Explorer for favorite, recent and open folders">
-  <img src="docs/images/apps.jpg" width="49%" alt="拼音搜应用：guanliqi 找到任务管理器 / launch apps by pinyin">
-  <img src="docs/images/places.jpg" width="49%" alt="直达 Windows 设置：shipeiqi 找到网络连接 / open Windows settings and Control Panel items">
-  <img src="docs/images/web.jpg" width="49%" alt="网页搜索：zhihu 显卡、bilibili、京东一步到位 / web search keywords">
-  <img src="docs/images/favorites.jpg" width="49%" alt="收藏夹：常去的文件夹排在最前，关键词直达 / favorites with keywords">
-  <img src="docs/images/plugins.jpg" width="49%" alt="插件：计算器、单位换算、颜色 / plugins: calculator, unit conversion, colors">
-  <img src="docs/images/dialog.jpg" width="49%" alt="打开、另存为对话框旁的搜索框，Ctrl+G 转到资源管理器的文件夹 / search bar for Open and Save dialogs">
-  <img src="docs/images/clipboard.jpg" width="49%" alt="剪贴板历史，代替 Win+V，拼音搜索、图片预览 / clipboard history replacing Win+V">
-  <img src="docs/images/clipocr.jpg" width="49%" alt="剪贴板 OCR：搜图片里的文字 / clipboard OCR: search words in copied pictures">
-  <img src="docs/images/taskbar.jpg" width="49%" alt="Win顺 任务栏搜索框 / WinShun’s search box on the taskbar">
-  <img src="docs/images/ai.jpg" width="49%" alt="AI 助手 MCP：Claude、Cursor、VS Code 一键连接 / MCP server for Claude, Cursor and VS Code">
-  <img src="docs/images/settings.jpg" width="49%" alt="设置可搜索：kjj 找到快捷键 / searchable settings">
-  <img src="docs/images/appearance.jpg" width="49%" alt="外观：主题、透明效果、圆角或直角、界面大小、单色任务栏图标 / appearance: theme, transparency, rounded or square corners, UI size, monochrome taskbar icon">
-  <img src="docs/images/dark.jpg" width="49%" alt="深色模式，Win11 云母效果 / dark theme with Windows 11 Mica">
+  <img src="docs/images/mod-preview-docx.jpg" width="44%" alt="嵌入式预览：Word 文档按页渲染，右下角页码">
+  <img src="docs/images/mod-preview-pdf.jpg" width="44%" alt="嵌入式预览：PDF 按页渲染，只画看得见的页"><br>
+  <sub><b>嵌入式分页预览</b>：Alt+P 在启动器右侧分栏里预览，Word / PDF 用 Windows 自带接口逐页懒渲染，右下角显示页码，几百页也不卡<br><b>Embedded page-wise preview</b>: Alt+P previews in a pane of the launcher's own window, rendered page by page, with a page counter at the corner</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/mod-file-info.jpg" width="44%" alt="预览不出来的文件显示类型、大小、时间和位置">
+  <img src="docs/images/mod-settings-preview.jpg" width="44%" alt="设置 › 结果列表 › 显示与预览：Office 文档怎么预览，三选一"><br>
+  <sub><b>没有预览就讲文件的事</b>：预览不出来的行显示类型、大小、修改/创建时间和位置，不再是冷冰冰的一句提示<br><b>Facts where nothing previews</b>: kind, size, dates and location instead of a bare note</sub>
+</p>
+
+<p align="center">
+  <img src="docs/images/mod-settings-background.jpg" width="44%" alt="设置 › 外观：自定义背景图，透明度可调">
+  <img src="docs/images/mod-settings-filetypes.jpg" width="44%" alt="设置 › 文件类型：每个类型可以各设各的排除路径"><br>
+  <sub><b>外观与排除</b>：自定义背景图（透明度可调）；每种文件类型还能各设各的排除路径，叠在全局排除之上<br><b>Looks and exclusions</b>: a custom background picture, and per-kind excluded folders on top of the global ones</sub>
 </p>
 
 ---
