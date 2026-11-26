@@ -3297,6 +3297,11 @@ Window {
                 // One modal form for both adding and editing; -1: new, -2: closed.
                 property int editing: -2
                 property Item returnFocus: null
+                // A row dragged by its grip: where it came from and where it
+                // hovers now ( FavoritesSection does the same).
+                property int dragFrom: -1
+                property int dragTo: -1
+                readonly property real rowHeight: 58
 
                 function edit(index, button) {
                     returnFocus = button
@@ -3314,7 +3319,7 @@ Window {
                 width: parent.width
                 note: qsTr("搜索框底部的一排引擎按钮：点一个，就用它搜索框里输入的内容；不输入时打开它的网站。网址里用 %s 代替要搜的文字。")
 
-                onVisibleChanged: if (!visible) { editing = -2; returnFocus = null }
+                onVisibleChanged: if (!visible) { editing = -2; returnFocus = null; dragFrom = -1; dragTo = -1 }
 
                 SettingRow {
                     title: qsTr("搜索框底部的引擎")
@@ -3364,15 +3369,38 @@ Window {
                                     required property var modelData
                                     width: engineList.width
                                     height: 58
+                                    readonly property bool dragged: footerEnginesSection.dragFrom === index
+                                    // Making way for the row dragged: a row's height up or down.
+                                    readonly property real shift: {
+                                        const from = footerEnginesSection.dragFrom
+                                        const to = footerEnginesSection.dragTo
+                                        if (from < 0 || dragged)
+                                            return 0
+                                        if (from < to && index > from && index <= to)
+                                            return -footerEnginesSection.rowHeight
+                                        if (from > to && index >= to && index < from)
+                                            return footerEnginesSection.rowHeight
+                                        return 0
+                                    }
+                                    property real offset: shift
+
+                                    Behavior on offset {
+                                        enabled: !engineRow.dragged
+                                        NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+                                    }
+                                    z: engineRow.dragged ? 2 : 0
+                                    transform: Translate { y: engineRow.dragged ? engineGrip.drag.activeTranslation.y : engineRow.offset }
 
                                     Rectangle {
                                         anchors.fill: parent
                                         anchors.margins: 1
                                         radius: Theme.smallControlRadius
-                                        color: engineArea.containsMouse ? Theme.navHover : "transparent"
+                                        color: engineRow.dragged ? Theme.card : engineArea.containsMouse ? Theme.navHover : "transparent"
+                                        border.width: engineRow.dragged ? 1 : 0
+                                        border.color: Theme.cardBorder
                                     }
                                     Rectangle {
-                                        visible: engineRow.index > 0
+                                        visible: engineRow.index > 0 && !engineRow.dragged
                                         x: 12
                                         width: parent.width - 24
                                         height: 1
@@ -3385,9 +3413,55 @@ Window {
                                         acceptedButtons: Qt.NoButton
                                     }
 
+                                    Item { // the grip: dragged into another place
+                                        id: engineGrip
+
+                                        readonly property alias drag: engineDragger
+
+                                        x: 4
+                                        width: 24
+                                        height: parent.height
+
+                                        Glyph {
+                                            anchors.centerIn: parent
+                                            glyph: "\uE76F" // GripperBarHorizontal
+                                            size: 14
+                                            color: engineGripHover.hovered || engineDragger.active ? Theme.text : Theme.faint
+                                        }
+                                        HoverHandler {
+                                            id: engineGripHover
+                                            cursorShape: engineDragger.active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                        }
+                                        DragHandler {
+                                            id: engineDragger
+                                            target: null
+                                            xAxis.enabled: false
+                                            enabled: window.editor.footerEngines.length > 1
+                                            onActiveChanged: {
+                                                if (active) {
+                                                    footerEnginesSection.dragFrom = engineRow.index
+                                                    footerEnginesSection.dragTo = engineRow.index
+                                                    return
+                                                }
+                                                const from = footerEnginesSection.dragFrom
+                                                const to = footerEnginesSection.dragTo
+                                                footerEnginesSection.dragFrom = -1
+                                                footerEnginesSection.dragTo = -1
+                                                if (from >= 0 && to >= 0 && to !== from)
+                                                    window.editor.moveFooterEngine(from, to)
+                                            }
+                                            onActiveTranslationChanged: {
+                                                if (!active)
+                                                    return
+                                                const steps = Math.round(engineDragger.activeTranslation.y / footerEnginesSection.rowHeight)
+                                                footerEnginesSection.dragTo = Math.max(0, Math.min(window.editor.footerEngines.length - 1, engineRow.index + steps))
+                                            }
+                                        }
+                                    }
+
                                     Column {
-                                        anchors.left: parent.left
-                                        anchors.leftMargin: 12
+                                        anchors.left: engineGrip.right
+                                        anchors.leftMargin: 4
                                         anchors.right: engineButtons.left
                                         anchors.rightMargin: 8
                                         anchors.verticalCenter: parent.verticalCenter

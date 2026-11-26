@@ -1318,6 +1318,16 @@ void SettingsEditor::removeFooterEngine(int index)
     commit();
 }
 
+bool SettingsEditor::moveFooterEngine(int from, int to)
+{
+    WebShortcuts& engines = m_settings.footerEngines;
+    if (from < 0 || from >= engines.size() || to < 0 || to >= engines.size() || from == to)
+        return false;
+    engines.move(from, to);
+    commit();
+    return true;
+}
+
 void SettingsEditor::openFooterEngine(int index)
 {
     if (index >= 0 && index < m_settings.footerEngines.size())
