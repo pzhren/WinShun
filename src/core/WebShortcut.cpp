@@ -95,6 +95,18 @@ WebShortcuts defaultWebShortcuts()
     return shortcuts;
 }
 
+WebShortcuts defaultFooterEngines()
+{
+    // No keyword: these are not typed, their footer button clicks (Footer.qml).
+    // No home: homeUrl() gives the site itself, what the button opens with
+    // nothing typed.
+    return {
+        {u""_s, u"谷歌学术"_s, u"https://scholar.google.com/scholar?q=%s"_s, {}},
+        {u""_s, u"百度"_s, u"https://www.baidu.com/s?wd=%s"_s, {}},
+        {u""_s, u"arXiv"_s, u"https://arxiv.org/search/?searchtype=all&query=%s"_s, {}},
+    };
+}
+
 WebShortcuts withNewDefaults(WebShortcuts shortcuts, const WebShortcuts& defaults)
 {
     const WebShortcuts before = shortcuts;

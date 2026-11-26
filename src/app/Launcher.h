@@ -84,6 +84,9 @@ class Launcher : public QObject {
     // typed: for each {name, icon}. Read again each time it is shown; none
     // while history is not kept.
     Q_PROPERTY(QVariantList frequentApps READ frequentApps NOTIFY frequentAppsChanged FINAL)
+    // The footer's engines, each {name}: a button there searches the words
+    // typed in the box at its site (openFooterEngine).
+    Q_PROPERTY(QVariantList footerEngines READ footerEngines NOTIFY footerEnginesChanged FINAL)
     // Files and folders, and content matches: best match first, or by when
     // last written (the footer's switch, Ctrl+S). 全部 keeps its apps,
     // places and web shortcuts first.
@@ -323,6 +326,10 @@ public:
     void setContentOptions(bool enabled, QStringList extensions, const ContentSizeLimits& sizeLimits,
         bool inLowPriority, bool documents);
     void setWebShortcuts(const WebShortcuts& shortcuts);
+    // The footer's engine buttons (Settings::footerEngines, Footer.qml):
+    // name and where a click searches.
+    void setFooterEngines(const WebShortcuts& engines);
+    QVariantList footerEngines() const;
     // 网页搜索建议 (Settings::webSuggestions): a site keyword and words typed
     // ("baidu 显卡") list the site's suggestions under its search's row.
     void setWebSuggestions(bool on);
@@ -374,6 +381,7 @@ public:
     Q_INVOKABLE void clearHistory();
     QVariantList frequentApps() const;
     Q_INVOKABLE void openFrequentApp(int index);
+    Q_INVOKABLE void openFooterEngine(int index); // searches the words typed there, or opens its site
     // Nothing typed, 全部, no folder chosen in 内容: as at the first opening
     // (Settings::clearOnOpen); the search follows in handleShown.
     void startOver();
@@ -523,6 +531,7 @@ signals:
     void contextMenuKeyPressed(bool system);
     void historyChanged();
     void frequentAppsChanged();
+    void footerEnginesChanged();
     void webSettingsRequested(); // the settings window, on its 网页搜索 page
     void fileTypeSettingsRequested(); // ... on its 结果列表 page, at the file types
     void fileTypeChanged();
@@ -795,6 +804,7 @@ private:
     ContentSizeLimits m_contentSizeLimits;
     bool m_contentInLowPriority = false; // 内容 also looks in system, program and tool folders
     WebShortcuts m_web;
+    WebShortcuts m_footerEngines; // the buttons' engines (setFooterEngines)
     bool m_webSuggestions = true;
     WebSuggester m_suggester;
     SearchResults m_suggestRows; // the latest answer's, for the site typed; kept until the next answer

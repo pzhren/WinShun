@@ -3291,6 +3291,162 @@ Window {
                 }
             }
 
+            SettingsSection {
+                id: footerEnginesSection
+
+                // One modal form for both adding and editing; -1: new, -2: closed.
+                property int editing: -2
+                property Item returnFocus: null
+
+                function edit(index, button) {
+                    returnFocus = button
+                    editing = index
+                }
+
+                function closeForm() {
+                    editing = -2
+                    const button = returnFocus || footerEngineAddButton
+                    button.forceActiveFocus()
+                    returnFocus = null
+                }
+
+                page: window.webPage
+                width: parent.width
+                note: qsTr("搜索框底部的一排引擎按钮：点一个，就用它搜索框里输入的内容；不输入时打开它的网站。网址里用 %s 代替要搜的文字。")
+
+                onVisibleChanged: if (!visible) { editing = -2; returnFocus = null }
+
+                SettingRow {
+                    title: qsTr("搜索框底部的引擎")
+                    keywords: qsTr("底部;引擎;搜索引擎;谷歌学术;学术;百度;arxiv;谷歌;scholar;网页搜索").split(";")
+                    values: {
+                        const words = []
+                        for (const engine of window.editor.footerEngines)
+                            words.push(engine.name, engine.shownUrl)
+                        return words
+                    }
+                    description: qsTr("点了就搜输入框里的内容")
+
+                    FlatButton {
+                        id: footerEngineAddButton
+                        text: qsTr("添加")
+                        glyph: "\uE710" // Add
+                        onClicked: footerEnginesSection.edit(-1, footerEngineAddButton)
+                    }
+
+                    body: [Rectangle {
+                        width: parent.width
+                        height: Math.max(engineList.implicitHeight, 40)
+                        radius: Theme.controlRadius
+                        color: "transparent"
+                        border.width: 1
+                        border.color: Theme.cardBorder
+
+                        Text {
+                            visible: window.editor.footerEngines.length === 0
+                            anchors.centerIn: parent
+                            text: qsTr("底部不放引擎，点“添加”加一个")
+                            color: Theme.faint
+                            font.pixelSize: Theme.fontCaption
+                        }
+
+                        Column {
+                            id: engineList
+                            width: parent.width
+
+                            Repeater {
+                                model: window.editor.footerEngines
+
+                                delegate: Item {
+                                    id: engineRow
+
+                                    required property int index
+                                    required property var modelData
+                                    width: engineList.width
+                                    height: 58
+
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        anchors.margins: 1
+                                        radius: Theme.smallControlRadius
+                                        color: engineArea.containsMouse ? Theme.navHover : "transparent"
+                                    }
+                                    Rectangle {
+                                        visible: engineRow.index > 0
+                                        x: 12
+                                        width: parent.width - 24
+                                        height: 1
+                                        color: Theme.divider
+                                    }
+                                    MouseArea {
+                                        id: engineArea
+                                        anchors.fill: parent
+                                        hoverEnabled: true
+                                        acceptedButtons: Qt.NoButton
+                                    }
+
+                                    Column {
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: 12
+                                        anchors.right: engineButtons.left
+                                        anchors.rightMargin: 8
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 2
+
+                                        Text {
+                                            width: parent.width
+                                            text: engineRow.modelData.name
+                                            textFormat: Text.PlainText
+                                            color: Theme.text
+                                            font.pixelSize: Theme.fontBody
+                                            elide: Text.ElideRight
+                                        }
+                                        Text {
+                                            width: parent.width
+                                            text: engineRow.modelData.searches ? engineRow.modelData.shownUrl
+                                                  : qsTr("%1 · 点了直接打开这一页").arg(engineRow.modelData.shownUrl)
+                                            textFormat: Text.PlainText
+                                            color: Theme.subtext
+                                            font.pixelSize: Theme.fontCaption
+                                            elide: Text.ElideMiddle
+                                        }
+                                    }
+                                    Row {
+                                        id: engineButtons
+                                        anchors.right: parent.right
+                                        anchors.rightMargin: 6
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        spacing: 2
+
+                                        FlatButton {
+                                            implicitHeight: 32
+                                            flat: true
+                                            text: qsTr("打开")
+                                            onClicked: window.editor.openFooterEngine(engineRow.index)
+                                        }
+                                        FlatButton {
+                                            implicitHeight: 32
+                                            flat: true
+                                            text: qsTr("编辑")
+                                            onClicked: footerEnginesSection.edit(engineRow.index, this)
+                                        }
+                                        FlatButton {
+                                            implicitHeight: 32
+                                            flat: true
+                                            text: qsTr("删除")
+                                            onClicked: {
+                                                window.editor.removeFooterEngine(engineRow.index)
+                                                footerEnginesSection.editing = -2
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }]
+                }
+            }
+
             FavoritesSection {
                 id: favoritesSection
                 page: window.favoritesPage
@@ -3873,6 +4029,27 @@ Window {
                     shortcut = window.editor.webShortcuts[index]
             }
             onFinished: webSection.closeForm()
+        }
+    }
+
+    Loader { // outside the page's Flickable: always in the visible window
+        id: footerEngineDialog
+        z: 1
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: titleBar.bottom
+        anchors.bottom: parent.bottom
+        active: footerEnginesSection.editing >= -1
+        visible: active
+        sourceComponent: FooterEngineForm {
+            editor: window.editor
+            index: footerEnginesSection.editing
+            // Copy the draft once. Saving rebuilds the list and its delegates.
+            Component.onCompleted: {
+                if (index >= 0)
+                    shortcut = window.editor.footerEngines[index]
+            }
+            onFinished: footerEnginesSection.closeForm()
         }
     }
 

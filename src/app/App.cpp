@@ -1212,6 +1212,7 @@ void App::applySettings(bool initial)
     m_launcher->setContentOptions(m_settings.contentSearch, m_settings.contentExtensions,
         m_settings.contentSizeLimits(), m_settings.contentInLowPriority, m_settings.contentDocuments);
     m_launcher->setWebShortcuts(m_settings.webShortcuts);
+    m_launcher->setFooterEngines(m_settings.footerEngines);
     m_launcher->setWebSuggestions(m_settings.webSuggestions);
     m_launcher->setGlobalExcludedPaths(m_settings.excludedPaths); // before setFileTypes: both re-search once
     m_launcher->setGlobalExcludedExtensions(m_settings.excludedExtensions); // before setFileTypes: both re-search once

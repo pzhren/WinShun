@@ -623,6 +623,38 @@ void Launcher::setWebShortcuts(const WebShortcuts& shortcuts)
         search();
 }
 
+void Launcher::setFooterEngines(const WebShortcuts& engines)
+{
+    if (engines == m_footerEngines)
+        return;
+    m_footerEngines = engines;
+    emit footerEnginesChanged(); // the buttons rebuild; nothing else depends on them
+}
+
+QVariantList Launcher::footerEngines() const
+{
+    QVariantList list;
+    for (const WebShortcut& engine : m_footerEngines)
+        list.append(QVariantMap {{u"name"_s, engine.name}});
+    return list;
+}
+
+// The engine's button clicked (Footer.qml): the words typed searched at its
+// site, or its site opened with nothing typed. Then the launcher steps
+// aside, as when a row opens.
+void Launcher::openFooterEngine(int index)
+{
+    if (index < 0 || index >= m_footerEngines.size())
+        return;
+    const WebShortcut& engine = m_footerEngines[index];
+    const QString words = m_query.trimmed();
+    const QString url = words.isEmpty() ? engine.homeUrl() : engine.searchUrl(words);
+    if (url.isEmpty())
+        return;
+    shell::openUrl(url);
+    emit dismissRequested();
+}
+
 void Launcher::setWebSuggestions(bool on)
 {
     if (on == m_webSuggestions)

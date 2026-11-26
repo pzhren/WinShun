@@ -238,6 +238,12 @@ struct Settings {
     // 1\Icon=, 1\Suggest= (written even empty: an entry without it is one
     // from before suggestions, and gets the one Win顺 knows for its site).
     WebShortcuts webShortcuts;
+    // [FooterEngines]: the engines as buttons in the footer's middle
+    // (Footer.qml): a click searches the words typed in the box at that
+    // site (WebShortcut::searchUrl); with nothing typed it opens the site.
+    // No keyword, no icon, no suggestions: not typed, not listed anywhere.
+    // Written as an array: size=, 1\Name=, 1\Url= (see readFooterEngines).
+    WebShortcuts footerEngines;
     // Suggestions=: the sites' search suggestions under a keyword's search
     // (WebSuggester). On: only words typed after a site's keyword go out,
     // to that site, which the user is about to search anyway.

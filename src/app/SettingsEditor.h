@@ -188,6 +188,8 @@ class SettingsEditor : public QObject {
     Q_PROPERTY(bool windowsSearchShown READ windowsSearchShown NOTIFY taskbarStateChanged FINAL)
     // 网页搜索: for each, {keyword, name, url, home, searches, shownUrl, shownHome, homeUrl}
     Q_PROPERTY(QVariantList webShortcuts READ webShortcuts NOTIFY changed FINAL)
+    // 搜索框底部的引擎: for each, {name, url, searches, shownUrl}
+    Q_PROPERTY(QVariantList footerEngines READ footerEngines NOTIFY changed FINAL)
     // The kinds of file 文件 narrows to: [{name, extensions: [..]}], named
     // in the language shown; fileTypesDefault while they are as they came.
     Q_PROPERTY(QVariantList fileTypes READ fileTypes NOTIFY changed FINAL)
@@ -524,6 +526,11 @@ public:
     Q_INVOKABLE bool showTaskbarButton();
 
     QVariantList webShortcuts() const;
+    QVariantList footerEngines() const;
+    // Returns what is wrong ("请填写名称"), empty when done.
+    Q_INVOKABLE QString saveFooterEngine(int index, const QString& name, const QString& url);
+    Q_INVOKABLE void removeFooterEngine(int index);
+    Q_INVOKABLE void openFooterEngine(int index); // its site, to try it
     QVariantList fileTypes() const;
     bool fileTypesDefault() const { return m_settings.fileTypes == Settings::defaultFileTypes(); }
     // Each returns what is wrong ("已有这个类型"), empty when done.

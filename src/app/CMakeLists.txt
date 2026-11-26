@@ -149,6 +149,7 @@ set(qml_files
     qml/FlatButton.qml
     qml/InputBox.qml
     qml/WebShortcutForm.qml
+    qml/FooterEngineForm.qml
     qml/FavoritesSection.qml
     qml/FavoriteForm.qml
     qml/ShareCard.qml

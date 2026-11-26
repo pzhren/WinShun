@@ -247,6 +247,47 @@ WebShortcuts readWebShortcuts(QSettings& s, const WebShortcuts& fallback, bool s
     return shortcuts;
 }
 
+void writeFooterEngines(QSettings& s, const WebShortcuts& engines)
+{
+    s.remove(u"FooterEngines"_s); // no entries left over from a longer list
+    s.beginWriteArray(u"FooterEngines"_s, static_cast<int>(engines.size()));
+    for (int i = 0; i < engines.size(); ++i) {
+        s.setArrayIndex(i);
+        s.setValue(u"Name"_s, engines[i].name);
+        s.setValue(u"Url"_s, engines[i].url);
+    }
+    s.endArray();
+}
+
+// Addresses tidied as the settings window would; one without a name takes
+// its site; one that cannot be opened is left out.
+WebShortcuts readFooterEngines(QSettings& s, const WebShortcuts& fallback)
+{
+    if (!s.contains(u"FooterEngines/size"_s)) { // never written: the defaults, and into the file with them
+        writeFooterEngines(s, fallback);
+        return fallback;
+    }
+    WebShortcuts engines;
+    const int size = s.beginReadArray(u"FooterEngines"_s);
+    for (int i = 0; i < size; ++i) {
+        s.setArrayIndex(i);
+        WebShortcut engine;
+        engine.name = s.value(u"Name"_s).toString().trimmed();
+        engine.url = normalizeWebUrl(s.value(u"Url"_s).toString());
+        if (engine.url.isEmpty())
+            continue; // nothing to open
+        if (engine.name.isEmpty()) {
+            const QString shown = displayWebUrl(engine.homeUrl());
+            engine.name = shown.left(shown.indexOf(u'/'));
+            if (engine.name.isEmpty())
+                engine.name = engine.url;
+        }
+        engines.append(engine);
+    }
+    s.endArray();
+    return engines;
+}
+
 // The built-in file types: id, name (to translate), extensions. As
 // Everything groups them, less what few people look for; 代码 last, the
 // least asked for.
@@ -573,6 +614,7 @@ Settings Settings::defaults()
     d.clipboard = windowsClipboardHistory(); // whoever kept Windows' clipboard history keeps ours
     d.clipboardExcludedApps = kDefaultClipboardExcludedApps;
     d.webShortcuts = defaultWebShortcuts();
+    d.footerEngines = defaultFooterEngines();
     d.fileTypes = defaultFileTypes();
     d.networkExcludedNames = kDefaultNetworkExcludedNames;
     d.networkExcludedFiles = kDefaultNetworkExcludedFiles;
@@ -783,6 +825,7 @@ void Settings::load()
     // Before the list: writing it (defaults new to the file) rewrites the whole group.
     webSuggestions = readOrDefault(s, u"WebSearch/Suggestions"_s, d.webSuggestions);
     webShortcuts = readWebShortcuts(s, d.webShortcuts, webSuggestions);
+    footerEngines = readFooterEngines(s, d.footerEngines);
     fileTypes = readFileTypes(s, d.fileTypes);
 
     shares = readShares(s);
@@ -889,6 +932,7 @@ void Settings::save() const
     s.setValue(u"Taskbar/SearchBoxStyle"_s, taskbarSearchBoxStyle);
     s.setValue(u"Taskbar/StartGap"_s, taskbarStartGap);
     writeWebShortcuts(s, webShortcuts, webSuggestions);
+    writeFooterEngines(s, footerEngines);
     writeFileTypes(s, fileTypes);
     writeShares(s, shares);
     s.setValue(u"Network/VerifyHours"_s, networkVerifyHours);

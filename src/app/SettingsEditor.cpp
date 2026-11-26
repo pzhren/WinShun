@@ -1272,6 +1272,58 @@ QVariantList SettingsEditor::webShortcuts() const
     return list;
 }
 
+QVariantList SettingsEditor::footerEngines() const
+{
+    QVariantList list;
+    for (const WebShortcut& engine : m_settings.footerEngines) {
+        list.append(QVariantMap {
+            {u"name"_s, engine.name},
+            {u"url"_s, engine.url},
+            {u"searches"_s, engine.searches()},
+            {u"shownUrl"_s, displayWebUrl(engine.url)},
+        });
+    }
+    return list;
+}
+
+QString SettingsEditor::saveFooterEngine(int index, const QString& name, const QString& url)
+{
+    WebShortcuts& engines = m_settings.footerEngines;
+    if (index >= engines.size())
+        return tr("这一项已经不在了"); // the file was changed meanwhile
+
+    WebShortcut engine;
+    engine.name = name.trimmed();
+    if (engine.name.isEmpty())
+        return tr("给引擎起个名字");
+    engine.url = normalizeWebUrl(url);
+    if (engine.url.isEmpty())
+        return url.trimmed().isEmpty() ? tr("请填写网址") : tr("打不开这个网址：它应当以 https:// 开头");
+
+    if (index < 0)
+        engines.append(engine);
+    else if (engines[index] != engine)
+        engines[index] = engine;
+    else
+        return {};
+    commit();
+    return {};
+}
+
+void SettingsEditor::removeFooterEngine(int index)
+{
+    if (index < 0 || index >= m_settings.footerEngines.size())
+        return;
+    m_settings.footerEngines.removeAt(index);
+    commit();
+}
+
+void SettingsEditor::openFooterEngine(int index)
+{
+    if (index >= 0 && index < m_settings.footerEngines.size())
+        shell::openUrl(m_settings.footerEngines[index].homeUrl());
+}
+
 QVariantList SettingsEditor::fileTypes() const
 {
     QVariantList list;

@@ -63,6 +63,12 @@ constexpr int kWebDefaultsVersion = 2;
 // not taken, nor their site (a user's own "bd" for 百度 keeps 百度 once).
 WebShortcuts withNewDefaults(WebShortcuts shortcuts, const WebShortcuts& defaults);
 
+// The engines the footer's buttons come with (Settings, FooterEngines;
+// Footer.qml): 谷歌学术, 百度, arXiv. Each searches the words typed in the
+// box (%s in `url`); with nothing typed its button opens its site. A user's
+// own list replaces these whole.
+WebShortcuts defaultFooterEngines();
+
 // "winshun-web:<keyword>": stands for a shortcut's row (SearchResult::path).
 QString webPath(const QString& keyword, const QString& words = {});
 bool isWebPath(QStringView path) noexcept;

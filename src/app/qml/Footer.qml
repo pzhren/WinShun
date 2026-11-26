@@ -119,7 +119,7 @@ Item {
         id: status
         anchors.left: order.visible ? order.right : parent.left
         anchors.leftMargin: order.visible ? 14 : 18
-        anchors.right: info.left
+        anchors.right: engines.visible ? engines.left : info.left
         anchors.rightMargin: 8
         anchors.verticalCenter: parent.verticalCenter
         text: footer.launcher.statusText
@@ -234,6 +234,76 @@ Item {
         Component.onCompleted: footer.frame.addControl(order) // buttons, not part of the drag area
     }
 
+    // The engines (设置 › 网页搜索 › 搜索框底部的引擎): a click searches the
+    // words typed in the box at that site, or opens its site with nothing
+    // typed (Launcher::openFooterEngine, which puts the launcher away).
+    Row {
+        id: engines
+
+        property int hovered: -1 // which chip the mouse rests on, for the tip
+        readonly property bool tipWanted: hovered >= 0
+        readonly property string tip: {
+            if (hovered < 0 || hovered >= footer.launcher.footerEngines.length)
+                return ""
+            const name = footer.launcher.footerEngines[hovered].name
+            const words = footer.launcher.query.trim()
+            return words.length > 0 ? qsTr("用%1搜索“%2”").arg(name, words) : qsTr("打开%1").arg(name)
+        }
+
+        visible: footer.launcher.footerEngines.length > 0
+        anchors.right: info.left
+        anchors.rightMargin: 6
+        anchors.verticalCenter: parent.verticalCenter
+        spacing: 2
+
+        Glyph {
+            anchors.verticalCenter: parent.verticalCenter
+            glyph: "\uE721" // Search
+            size: 15
+            color: Theme.faint
+        }
+
+        Repeater {
+            model: footer.launcher.footerEngines
+
+            delegate: Rectangle {
+                id: engineChip
+
+                required property int index
+                required property var modelData
+
+                width: Math.ceil(engineLabel.implicitWidth) + 14 // whole pixels: the labels after it stay sharp
+                height: Theme.chipHeight - 4
+                radius: Theme.controlRadius
+                color: engineArea.containsMouse ? Theme.chipHover : "transparent"
+
+                Text {
+                    id: engineLabel
+                    anchors.centerIn: parent
+                    text: engineChip.modelData.name
+                    textFormat: Text.PlainText
+                    color: engineArea.containsMouse ? Theme.text : Theme.subtext
+                    font.pixelSize: Theme.uiCaption
+                }
+
+                MouseArea {
+                    id: engineArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onContainsMouseChanged: {
+                        if (containsMouse)
+                            engines.hovered = engineChip.index
+                        else if (engines.hovered === engineChip.index)
+                            engines.hovered = -1
+                    }
+                    onClicked: footer.launcher.openFooterEngine(engineChip.index)
+                }
+            }
+        }
+        Component.onCompleted: footer.frame.addControl(engines) // buttons, not part of the drag area
+    }
+
     // The launcher's other shortcuts, while the mouse rests on it.
     ShortcutsButton {
         id: info
@@ -299,8 +369,12 @@ Item {
     }
 
     HoverTip {
-        target: clearHistory.tipWanted ? clearHistory : order.tipWanted && order.visible ? order : null
-        text: clearHistory.tipWanted ? clearHistory.tip : order.tip
-        shortcut: clearHistory.tipWanted ? "" : "Ctrl+S"
+        target: clearHistory.tipWanted ? clearHistory
+              : order.tipWanted && order.visible ? order
+              : engines.tipWanted ? engines : null
+        text: clearHistory.tipWanted ? clearHistory.tip
+            : order.tipWanted && order.visible ? order.tip
+            : engines.tip
+        shortcut: clearHistory.tipWanted || engines.tipWanted ? "" : "Ctrl+S"
     }
 }
