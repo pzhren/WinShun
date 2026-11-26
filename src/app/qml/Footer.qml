@@ -251,10 +251,18 @@ Item {
         }
 
         visible: footer.launcher.footerEngines.length > 0
-        anchors.right: info.left
+        onVisibleChanged: hovered = -1 // the mouse was on a chip that is gone
+        anchors.right: openSettings.left
         anchors.rightMargin: 6
         anchors.verticalCenter: parent.verticalCenter
         spacing: 2
+
+        Connections {
+            // A chip's index may not survive a new list: nothing is hovered
+            // then, and the tip must not stay with what it said.
+            target: footer.launcher
+            function onFooterEnginesChanged() { engines.hovered = -1 }
+        }
 
         Glyph {
             anchors.verticalCenter: parent.verticalCenter
@@ -302,6 +310,20 @@ Item {
             }
         }
         Component.onCompleted: footer.frame.addControl(engines) // buttons, not part of the drag area
+    }
+
+    // 设置, at the corner: the window with everything this footer's chips
+    // hint at (the engines, the excluded paths, the looks).
+    RowAction {
+        id: openSettings
+
+        anchors.right: info.left
+        anchors.rightMargin: 2
+        anchors.verticalCenter: parent.verticalCenter
+        glyph: "\uE713" // Setting
+        tip: qsTr("打开设置")
+        onClicked: footer.launcher.openSettings()
+        Component.onCompleted: footer.frame.addControl(openSettings) // a button, not part of the drag area
     }
 
     // The launcher's other shortcuts, while the mouse rests on it.
@@ -370,11 +392,13 @@ Item {
 
     HoverTip {
         target: clearHistory.tipWanted ? clearHistory
+              : openSettings.tipWanted ? openSettings
               : order.tipWanted && order.visible ? order
-              : engines.tipWanted ? engines : null
+              : engines.tipWanted && engines.tip.length > 0 ? engines : null
         text: clearHistory.tipWanted ? clearHistory.tip
+            : openSettings.tipWanted ? openSettings.tip
             : order.tipWanted && order.visible ? order.tip
             : engines.tip
-        shortcut: clearHistory.tipWanted || engines.tipWanted ? "" : "Ctrl+S"
+        shortcut: clearHistory.tipWanted || openSettings.tipWanted || engines.tipWanted ? "" : "Ctrl+S"
     }
 }
