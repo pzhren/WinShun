@@ -27,7 +27,8 @@ namespace {
 // Layout (little endian):
 //   magic[8] version:u32
 //   volumeCount:u32 { len:u16 root:wchar[len] serial:u32 journalId:u64 usn:i64 }*
-//   4 x { count:u32 { len:u16 text:wchar[len] }* }   crawl rules (version 3 on)
+//   5 x { count:u32 { len:u16 text:wchar[len] }* }   crawl rules (version 9 on;
+//                                                     4 x before, no extensions list)
 //   nameCount:u32 { bytes:u32 { name:u8[] 0 }[kGroup] }*   (version 6 on; at the end, fewer)
 //   entryCount:u32 { backBytes:u32 back:leb[kGroup] flags:u8[kGroup] nameBytes:u32 name:leb[kGroup]
 //                    timeBytes:u32 time:leb[kGroup] (version 7 on)
@@ -62,7 +63,7 @@ namespace {
 // the index is walked or rebuilt. Files written before are read as they are.
 constexpr char kMagic[8] = {'Q', 'F', 'I', 'N', 'D', 'E', 'X', '\0'};
 constexpr char kPackedMagic[8] = {'Q', 'F', 'I', 'N', 'D', 'E', 'X', 'Z'};
-constexpr std::uint32_t kVersion = 8;
+constexpr std::uint32_t kVersion = 9; // 8: with sizes; 9: CrawlRules keeps excludedExtensions too
 constexpr std::size_t kGroup = 1 << 16;
 constexpr std::uint32_t kOldestVersion = 2; // without the rules
 constexpr std::uint32_t kEndMarker = 0x21444E45; // "END!"
@@ -623,7 +624,14 @@ std::optional<Contents> load(const QString& filePath)
     }
     if (version >= 3) {
         CrawlRules rules;
+        // Version 9 keeps the excluded extensions as its own list. Before it
+        // there were four lists in the same order, without that one in the
+        // middle: skip its slot, or what follows is read one list too soon.
+        int slot = 0;
         forEachList(rules, [&](std::vector<std::wstring>& list) {
+            const bool extensions = slot++ == 2;
+            if (version < 9 && extensions)
+                return;
             const auto n = r.get<std::uint32_t>();
             for (std::uint32_t k = 0; k < n && r.ok(); ++k)
                 list.push_back(r.wide());
